@@ -1,0 +1,22 @@
+node_modules
+app/static
+webui/public/assets/styles
+logs
+app/data
+app/db/sql.db
+config.yaml
+torrents
+develop
+.worktrees
+
+# Runtime configuration and secrets are deliberately excluded from this public fork.
+app/config/
+vertex/
+deploy/
+.env
+.env.*
+*.db
+*.sqlite
+*.sqlite3
+*.pem
+*.key

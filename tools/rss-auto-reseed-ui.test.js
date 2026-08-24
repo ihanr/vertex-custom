@@ -27,5 +27,10 @@ assert.match(
   /v-if="rss\.autoReseed"/,
   'reseed-only controls should be hidden until auto reseed is enabled'
 );
+assert.doesNotMatch(
+  rssTaskPage,
+  /自动辅种会跳过校验添加/,
+  'RSS task form should not show the skip-checking warning banner'
+);
 
 console.log('PASS RSS auto reseed controls are exposed in the task form');

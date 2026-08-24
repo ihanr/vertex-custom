@@ -290,12 +290,6 @@
             </a-row>
           </a-checkbox-group>
         </a-form-item>
-        <a-alert
-          v-if="rss.autoReseed"
-          style="margin: 0 0 16px 12.5%; width: 87.5%;"
-          type="warning"
-          show-icon
-          message="自动辅种会跳过校验添加，请确认文件完全一致" />
         <a-form-item
           label="跳过大小相同种子"
           name="skipSameTorrent"

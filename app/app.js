@@ -26,6 +26,38 @@ const config = require('./libs/config');
 const { execSync } = require('child_process');
 logger.use(app);
 
+const DEFAULT_HIDDEN_MENU = [
+  '/metric/site',
+  '/metric/server',
+  '/base/site',
+  '/base/server',
+  '/base/notification',
+  '/rule/select',
+  '/rule/link',
+  '/task/subscribe',
+  '/task/watchCategory',
+  '/task/link',
+  '/task/bulkLink',
+  '/subscribe',
+  '/subscribe/list',
+  '/subscribe/search',
+  '/subscribe/add',
+  '/mix',
+  '/mix/search',
+  '/mix/downloader',
+  '/history/subscribe',
+  '/history/watchCategory',
+  '/tool/mikanHistory',
+  '/tool/networkTest',
+  '/tool/hosts',
+  '/tool/proxy',
+  '/tool/pathGenerator',
+  '/guide',
+  '/guide/rss',
+  '/guide/subscribe',
+  '/setting/interaction'
+];
+
 const initPush = function () {
   const webhookPush = util.listPush().filter(item => item.id === global.webhookPushTo)[0];
   if (webhookPush) {
@@ -91,7 +123,9 @@ const init = function () {
     watermark: 'vertex'
   };
   global.trustAllCerts = setting.trustAllCerts;
-  global.menu = setting.menu || [];
+  global.menu = Object.prototype.hasOwnProperty.call(setting, 'menu')
+    ? setting.menu
+    : DEFAULT_HIDDEN_MENU;
   global.dashboardContent = setting.dashboardContent || [];
   global.wechatToken = setting.wechatToken;
   global.wechatAesKey = setting.wechatAesKey;

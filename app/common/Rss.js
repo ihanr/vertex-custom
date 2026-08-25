@@ -231,7 +231,7 @@ class Rss {
 
   async _pushTorrent (torrent, _client, fitRule) {
     if (this.autoReseed && torrent.hash.indexOf('fakehash') === -1) {
-      for (const key of this.reseedClients) {
+      for (const key of this.reseedClients || []) {
         const client = global.runningClient[key];
         if (!client) {
           logger.error('Rss', this.alias, '下载器', key, '不存在');

@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const limiter = require('./vertex-3ratio-limiter');
+
+const loadVertexTask = () => eval(fs.readFileSync('./tools/vertex-3ratio-limiter.vertex.js', 'utf8'));
 
 const makeClient = (alias, torrents, calls, overrides = {}) => ({
   alias,
@@ -16,7 +17,7 @@ const makeClient = (alias, torrents, calls, overrides = {}) => ({
     },
     addTorrentTag: async (_url, _cookie, hash, tag) => {
       calls.push(['tag', alias, hash, tag]);
-      return { statusCode: 200 };
+      return { statusCode: overrides.tagStatus || 200 };
     }
   },
   ...overrides
@@ -52,22 +53,23 @@ const run = async () => {
     ], calls),
     second: makeClient('NOT-SELECTED', [{ ...eligible, hash: 'outside-scope' }], calls),
     third: makeClient('HZ-02', [{ ...eligible, hash: 'offline' }], calls, { status: false }),
-    fourth: makeClient('HZ-03', [{ ...eligible, hash: 'rejected-limit' }], calls, { limitStatus: 202 })
+    fourth: makeClient('HZ-03', [{ ...eligible, hash: 'rejected-limit' }], calls, { limitStatus: 202 }),
+    fifth: makeClient('HZ-04', [{ ...eligible, hash: 'rejected-tag' }], calls, { tagStatus: 202 })
   };
 
-  const result = await limiter({ dryRun: false });
+  const result = await loadVertexTask()({ dryRun: false });
 
   assert.deepEqual(calls, [
     ['limit', 'HZ-01', 'eligible', 'upload', 10240],
     ['tag', 'HZ-01', 'eligible', '3ratio'],
-    ['limit', 'HZ-01', 'eligible-aud', 'upload', 10240],
-    ['tag', 'HZ-01', 'eligible-aud', '3ratio'],
-    ['limit', 'HZ-03', 'rejected-limit', 'upload', 10240]
+    ['limit', 'HZ-03', 'rejected-limit', 'upload', 10240],
+    ['limit', 'HZ-04', 'rejected-tag', 'upload', 10240],
+    ['tag', 'HZ-04', 'rejected-tag', '3ratio']
   ]);
-  assert.equal(result.limited, 2);
-  assert.equal(result.skipped, 6);
-  assert.equal(result.failed, 1);
-  assert.equal(logs.filter(([level]) => level === 'error').length, 1);
+  assert.equal(result.limited, 1);
+  assert.equal(result.skipped, 7);
+  assert.equal(result.failed, 2);
+  assert.equal(logs.filter(([level]) => level === 'error').length, 2);
 
   const dryRunCalls = [];
   const dryRunLogs = [];
@@ -78,10 +80,10 @@ const run = async () => {
   global.runningClient = {
     first: makeClient('HZ-01', [{ ...eligible, hash: 'dry-run' }], dryRunCalls)
   };
-  const vertexTask = eval(fs.readFileSync('./tools/vertex-3ratio-limiter.vertex.js', 'utf8'));
-  await vertexTask();
+  await loadVertexTask()({ dryRun: true });
   assert.deepEqual(dryRunCalls, []);
   assert.ok(dryRunLogs.some(([message]) => String(message).includes('[3ratio][演练]')));
+  console.log('PASS Vertex 3ratio production and dry-run behavior');
 };
 
 run().catch(error => {

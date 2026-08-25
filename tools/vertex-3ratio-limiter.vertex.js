@@ -1,5 +1,5 @@
-async () => {
-  const DRY_RUN = true;
+async ({ dryRun = false } = {}) => {
+  const DRY_RUN = dryRun;
   const TARGET_ALIASES = new Set([
     'HZ-01', 'HZ-02', 'HZ-03', 'HZ-04', 'HZ-05',
     'KS1B-DE-1', 'KS1B-DE-2',
@@ -7,7 +7,7 @@ async () => {
     'KS2-FR-1', 'KS2-FR-2',
     'KS2-UK-1', 'KS2-UK-2'
   ]);
-  const TARGET_CATEGORIES = new Set(['MTV', 'HH', 'TTG', 'AUD']);
+  const TARGET_CATEGORIES = new Set(['MTV', 'HH', 'TTG']);
   const SEEDING_STATES = new Set(['uploading', 'stalledUP', 'Seeding']);
   const RATIO_THRESHOLD = 3.3;
   const UPLOAD_LIMIT = 10 * 1024;
@@ -72,4 +72,5 @@ async () => {
   }
 
   log.info(`[3ratio] 汇总: 限速 ${result.limited}，跳过 ${result.skipped}，失败 ${result.failed}`);
+  return result;
 }

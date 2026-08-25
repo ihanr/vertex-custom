@@ -40,7 +40,7 @@ class ClientMod {
     const watchList = util.listWatch();
     for (const client of clientList) {
       client.used = !global.ignoreDependCheck && (rssList.some(item => (item.clientArr || [item.client]).indexOf(client.id) !== -1) ||
-        rssList.some(item => item.reseedClients.indexOf(client.id) !== -1) ||
+        rssList.some(item => (item.reseedClients || []).indexOf(client.id) !== -1) ||
         doubanList.some(item => item.client === client.id) ||
         watchList.some(item => item.downloader === client.id));
       client.status = !!(client.enable && global.runningClient[client.id] && global.runningClient[client.id].status && global.runningClient[client.id].maindata);

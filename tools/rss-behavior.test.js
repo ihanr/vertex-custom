@@ -47,6 +47,7 @@ const makeClient = (id, overrides = {}) => ({
     freeSpaceOnDisk: 100
   },
   addTorrent: async (...args) => calls.push([id, ...args]),
+  addTorrentTag: async (hash, tag) => calls.push([id, 'tag', hash, tag]),
   ...overrides
 });
 
@@ -119,7 +120,10 @@ const test = async (name, fn) => {
 
     await rss._pushTorrent(torrent, global.runningClient.normal);
 
-    assert.deepEqual(calls, [['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', '']]);
+    assert.deepEqual(calls, [
+      ['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', ''],
+      ['reseed', 'tag', torrent.hash, 'Reseed']
+    ]);
   });
 
   await test('auto reseed falls back to the selected normal downloader when no data matches', async () => {
@@ -175,7 +179,10 @@ const test = async (name, fn) => {
 
     await rss.rss([torrent]);
 
-    assert.deepEqual(calls, [['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', '']]);
+    assert.deepEqual(calls, [
+      ['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', ''],
+      ['reseed', 'tag', torrent.hash, 'Reseed']
+    ]);
   });
 
   await test('a reseed notification failure does not fall back to a normal download', async () => {
@@ -196,7 +203,10 @@ const test = async (name, fn) => {
 
     await rss._pushTorrent(torrent, global.runningClient.normal);
 
-    assert.deepEqual(calls, [['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', '']]);
+    assert.deepEqual(calls, [
+      ['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', ''],
+      ['reseed', 'tag', torrent.hash, 'Reseed']
+    ]);
   });
 
   await test('missing legacy reseedClients behaves as an empty downloader list', async () => {

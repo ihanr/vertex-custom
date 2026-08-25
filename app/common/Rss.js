@@ -252,11 +252,12 @@ class Rss {
                 continue;
               }
               try {
+                await client.addTorrentTag(torrent.hash, 'Reseed');
                 await util.runRecord('INSERT INTO torrents (hash, name, size, rss_id, category, link, record_time, add_time, record_type, record_note) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                   [torrent.hash, torrent.name, torrent.size, this.id, this.category, torrent.link, moment().unix(), moment().unix(), 1, '辅种']);
                 await this.ntf.addTorrent(this._rss, client, torrent);
               } catch (error) {
-                logger.error(this.alias, '下载器', client, '辅种后记录或通知失败\n', error);
+                logger.error(this.alias, '下载器', client, '辅种后标签、记录或通知失败\n', error);
               }
               return;
             }

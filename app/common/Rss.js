@@ -231,6 +231,8 @@ class Rss {
 
   async _pushTorrent (torrent, _client, fitRule) {
     if (this.autoReseed && torrent.hash.indexOf('fakehash') === -1) {
+      let bencodeInfo;
+      let bencodeLookupFailed = false;
       for (const key of this.reseedClients || []) {
         const client = global.runningClient[key];
         if (!client || !client.maindata || !Array.isArray(client.maindata.torrents)) {
@@ -239,16 +241,32 @@ class Rss {
         }
         for (const _torrent of client.maindata.torrents) {
           if (+_torrent.size === +torrent.size && +_torrent.completed === +_torrent.size) {
-            const bencodeInfo = await rss.getTorrentNameByBencode(torrent.url);
+            if (!bencodeInfo && !bencodeLookupFailed) {
+              try {
+                bencodeInfo = await rss.getTorrentNameByBencode(torrent.url);
+              } catch (error) {
+                bencodeLookupFailed = true;
+                logger.error(this.alias, '获取辅种种子信息失败', torrent.name, error);
+              }
+            }
+            if (!bencodeInfo) continue;
             if (_torrent.name === bencodeInfo.name && _torrent.hash !== bencodeInfo.hash) {
               try {
-                this.addCount += 1;
                 await client.addTorrent(torrent.url, torrent.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category);
+                this.addCount += 1;
               } catch (error) {
                 logger.error(this.alias, '下载器', client, '添加种子', torrent.name, '失败\n', error);
-                await util.runRecord('INSERT INTO torrents (hash, name, size, rss_id, category, link, record_time, record_type, record_note) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                  [torrent.hash, torrent.name, torrent.size, this.id, this.category, torrent.link, moment().unix(), 3, '辅种失败']);
-                await this.ntf.addTorrentError(this._rss, client, torrent);
+                try {
+                  await util.runRecord('INSERT INTO torrents (hash, name, size, rss_id, category, link, record_time, record_type, record_note) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    [torrent.hash, torrent.name, torrent.size, this.id, this.category, torrent.link, moment().unix(), 3, '辅种失败']);
+                } catch (recordError) {
+                  logger.error(this.alias, '记录辅种失败信息失败\n', recordError);
+                }
+                try {
+                  await this.ntf.addTorrentError(this._rss, client, torrent);
+                } catch (notifyError) {
+                  logger.error(this.alias, '发送辅种失败通知失败\n', notifyError);
+                }
                 continue;
               }
               try {

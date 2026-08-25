@@ -97,6 +97,8 @@ const torrent = {
 const reset = () => {
   calls.length = 0;
   global.runningClient = {};
+  rssApi.getTorrentNameByBencode = async () => ({ name: 'matched data', hash: 'new-hash' });
+  util.runRecord = async () => {};
 };
 
 const test = async (name, fn) => {
@@ -207,6 +209,72 @@ const test = async (name, fn) => {
       ['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', ''],
       ['reseed', 'tag', torrent.hash, 'Reseed']
     ]);
+  });
+
+  await test('a failed reseed metadata lookup falls back to the normal downloader', async () => {
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] }
+    });
+    global.runningClient.normal = makeClient('normal');
+    rssApi.getTorrentNameByBencode = async () => { throw new Error('metadata unavailable'); };
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.deepEqual(calls, [['normal', torrent.url, torrent.hash, false, 0, 0, '', '', undefined, undefined]]);
+  });
+
+  await test('a reseed failure record error does not prevent normal fallback', async () => {
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },
+      addTorrent: async () => { throw new Error('reseed add failed'); }
+    });
+    global.runningClient.normal = makeClient('normal');
+    let recordAttempts = 0;
+    util.runRecord = async () => {
+      recordAttempts += 1;
+      if (recordAttempts === 1) throw new Error('record unavailable');
+    };
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.deepEqual(calls, [['normal', torrent.url, torrent.hash, false, 0, 0, '', '', undefined, undefined]]);
+  });
+
+  await test('a reseed failure notification error does not prevent normal fallback', async () => {
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },
+      addTorrent: async () => { throw new Error('reseed add failed'); }
+    });
+    global.runningClient.normal = makeClient('normal');
+    const rss = makeRss({
+      autoReseed: true,
+      reseedClients: ['reseed'],
+      ntf: {
+        addTorrent: async () => {},
+        addTorrentError: async () => { throw new Error('notification unavailable'); },
+        rejectTorrent: async () => {},
+        scrapeError: async () => {}
+      }
+    });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.deepEqual(calls, [['normal', torrent.url, torrent.hash, false, 0, 0, '', '', undefined, undefined]]);
+  });
+
+  await test('a failed reseed attempt does not consume an extra hourly add slot', async () => {
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },
+      addTorrent: async () => { throw new Error('reseed add failed'); }
+    });
+    global.runningClient.normal = makeClient('normal');
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.equal(rss.addCount, 1);
   });
 
   await test('missing legacy reseedClients behaves as an empty downloader list', async () => {

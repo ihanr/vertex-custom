@@ -142,6 +142,44 @@ const test = async (name, fn) => {
     assert.deepEqual(calls, []);
   });
 
+  await test('only reseed still uses completed data when the normal downloader group is unavailable', async () => {
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] }
+    });
+    global.runningClient.normal = makeClient('normal', { status: false });
+    const rss = makeRss({
+      autoReseed: true,
+      onlyReseed: true,
+      reseedClients: ['reseed'],
+      acceptRules: [{ type: 'javascript', code: '() => true', clientArr: ['normal'] }]
+    });
+
+    await rss.rss([torrent]);
+
+    assert.deepEqual(calls, [['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', '']]);
+  });
+
+  await test('a reseed notification failure does not fall back to a normal download', async () => {
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] }
+    });
+    global.runningClient.normal = makeClient('normal');
+    const rss = makeRss({
+      autoReseed: true,
+      reseedClients: ['reseed'],
+      ntf: {
+        addTorrent: async () => { throw new Error('notification unavailable'); },
+        addTorrentError: async () => {},
+        rejectTorrent: async () => {},
+        scrapeError: async () => {}
+      }
+    });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.deepEqual(calls, [['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', '']]);
+  });
+
   await test('missing legacy reseedClients behaves as an empty downloader list', async () => {
     global.runningClient.normal = makeClient('normal');
     const rss = makeRss({ autoReseed: true });

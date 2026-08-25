@@ -8,6 +8,7 @@ const rssApi = {
 const util = {
   getRecord: async () => undefined,
   runRecord: async () => {},
+  sleep: async () => {},
   uuid: { v4: () => 'test-uuid' }
 };
 const logger = { info: () => {}, error: () => {} };
@@ -47,7 +48,10 @@ const makeClient = (id, overrides = {}) => ({
     freeSpaceOnDisk: 100
   },
   addTorrent: async (...args) => calls.push([id, ...args]),
-  addTorrentTag: async (hash, tag) => calls.push([id, 'tag', hash, tag]),
+  addTorrentTag: async (hash, tag) => {
+    calls.push([id, 'tag', hash, tag]);
+    return { statusCode: 200 };
+  },
   ...overrides
 });
 
@@ -99,6 +103,7 @@ const reset = () => {
   global.runningClient = {};
   rssApi.getTorrentNameByBencode = async () => ({ name: 'matched data', hash: 'new-hash' });
   util.runRecord = async () => {};
+  util.sleep = async () => {};
 };
 
 const test = async (name, fn) => {
@@ -209,6 +214,44 @@ const test = async (name, fn) => {
       ['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', ''],
       ['reseed', 'tag', torrent.hash, 'Reseed']
     ]);
+  });
+
+  await test('auto reseed retries a failed tag request until qB confirms success', async () => {
+    let tagAttempts = 0;
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },
+      addTorrentTag: async (hash, tag) => {
+        calls.push(['reseed', 'tag', hash, tag]);
+        tagAttempts += 1;
+        return { statusCode: tagAttempts === 3 ? 200 : 500 };
+      }
+    });
+    global.runningClient.normal = makeClient('normal');
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.equal(tagAttempts, 3);
+  });
+
+  await test('a permanently failed tag is recorded as a tag failure', async () => {
+    const records = [];
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },
+      addTorrentTag: async (hash, tag) => {
+        calls.push(['reseed', 'tag', hash, tag]);
+        return { statusCode: 500 };
+      }
+    });
+    global.runningClient.normal = makeClient('normal');
+    util.runRecord = async (_sql, values) => records.push(values);
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.equal(calls.filter(call => call[1] === 'tag').length, 3);
+    assert.ok(records.some(values => values.includes('辅种（标签失败）')));
+    assert.ok(!records.some(values => values.includes('辅种')));
   });
 
   await test('a failed reseed metadata lookup falls back to the normal downloader', async () => {

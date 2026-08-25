@@ -229,6 +229,24 @@ class Rss {
     )[0];
   }
 
+  async _addReseedTag (client, hash) {
+    let lastError;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const result = await client.addTorrentTag(hash, 'Reseed');
+        if (result && result.statusCode === 200) return;
+        lastError = new Error(`qB 添加 Reseed 标签返回状态码: ${result && result.statusCode}`);
+      } catch (error) {
+        lastError = error;
+      }
+      if (attempt < 3) {
+        logger.error(this.alias, '下载器', client.alias, `添加 Reseed 标签第 ${attempt} 次失败:`, lastError.message);
+        await util.sleep(1000);
+      }
+    }
+    throw lastError;
+  }
+
   async _pushTorrent (torrent, _client, fitRule) {
     if (this.autoReseed && torrent.hash.indexOf('fakehash') === -1) {
       let bencodeInfo;
@@ -270,9 +288,15 @@ class Rss {
                 continue;
               }
               try {
-                await client.addTorrentTag(torrent.hash, 'Reseed');
+                let note = '辅种';
+                try {
+                  await this._addReseedTag(client, torrent.hash);
+                } catch (tagError) {
+                  note = '辅种（标签失败）';
+                  logger.error(this.alias, '下载器', client.alias, '添加 Reseed 标签失败:', tagError.message);
+                }
                 await util.runRecord('INSERT INTO torrents (hash, name, size, rss_id, category, link, record_time, add_time, record_type, record_note) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                  [torrent.hash, torrent.name, torrent.size, this.id, this.category, torrent.link, moment().unix(), moment().unix(), 1, '辅种']);
+                  [torrent.hash, torrent.name, torrent.size, this.id, this.category, torrent.link, moment().unix(), moment().unix(), 1, note]);
                 await this.ntf.addTorrent(this._rss, client, torrent);
               } catch (error) {
                 logger.error(this.alias, '下载器', client, '辅种后标签、记录或通知失败\n', error);

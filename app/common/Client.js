@@ -340,7 +340,7 @@ class Client {
 
   async addTorrentTag (hash, tag) {
     if (this._client.type === 'qBittorrent') {
-      await this.client.addTorrentTag(this.clientUrl, this.cookie, hash, tag);
+      return await this.client.addTorrentTag(this.clientUrl, this.cookie, hash, tag);
     }
   }
 

@@ -142,6 +142,25 @@ const test = async (name, fn) => {
     assert.deepEqual(calls, []);
   });
 
+  await test('only reseed does not suppress normal downloads when auto reseed is disabled', async () => {
+    global.runningClient.normal = makeClient('normal');
+    const rss = makeRss({ autoReseed: false, onlyReseed: true });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.deepEqual(calls, [['normal', torrent.url, torrent.hash, false, 0, 0, '', '', undefined, undefined]]);
+  });
+
+  await test('an unavailable reseed downloader is skipped and normal download continues', async () => {
+    global.runningClient.reseed = makeClient('reseed', { maindata: undefined });
+    global.runningClient.normal = makeClient('normal');
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.deepEqual(calls, [['normal', torrent.url, torrent.hash, false, 0, 0, '', '', undefined, undefined]]);
+  });
+
   await test('only reseed still uses completed data when the normal downloader group is unavailable', async () => {
     global.runningClient.reseed = makeClient('reseed', {
       maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] }

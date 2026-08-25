@@ -21,7 +21,7 @@ class Rss {
     this.clientArr = rss.clientArr || [rss.client];
     this.clientSortBy = rss.clientSortBy;
     this.autoReseed = rss.autoReseed;
-    this.onlyReseed = rss.onlyReseed;
+    this.onlyReseed = !!rss.autoReseed && !!rss.onlyReseed;
     this.reseedClients = rss.reseedClients;
     this.pushMessage = rss.pushMessage;
     this.skipSameTorrent = rss.skipSameTorrent;
@@ -233,8 +233,8 @@ class Rss {
     if (this.autoReseed && torrent.hash.indexOf('fakehash') === -1) {
       for (const key of this.reseedClients || []) {
         const client = global.runningClient[key];
-        if (!client) {
-          logger.error('Rss', this.alias, '下载器', key, '不存在');
+        if (!client || !client.maindata || !Array.isArray(client.maindata.torrents)) {
+          logger.error('Rss', this.alias, '下载器', key, '不可用');
           continue;
         }
         for (const _torrent of client.maindata.torrents) {
@@ -264,7 +264,7 @@ class Rss {
         }
       }
     }
-    if (!this.onlyReseed) {
+    if (!this.onlyReseed || !this.autoReseed) {
       if (!_client) {
         await util.runRecord('INSERT INTO torrents (hash, name, size, rss_id, link, record_time, record_type, record_note) values (?, ?, ?, ?, ?, ?, ?, ?)',
           [torrent.hash, torrent.name, torrent.size, this.id, torrent.link, moment().unix(), 2, '拒绝原因: 无可用下载器']);

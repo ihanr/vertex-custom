@@ -33,27 +33,33 @@ const Rss = require('../app/common/Rss');
 Module._load = originalLoad;
 
 const calls = [];
-const makeClient = (id, overrides = {}) => ({
-  id,
-  alias: id,
-  status: true,
-  _client: { type: 'qBittorrent' },
-  avgUploadSpeed: 0,
-  avgDownloadSpeed: 0,
-  maindata: {
-    torrents: [],
-    leechingCount: 0,
-    uploadSpeed: 0,
-    downloadSpeed: 0,
-    freeSpaceOnDisk: 100
-  },
-  addTorrent: async (...args) => calls.push([id, ...args]),
-  addTorrentTag: async (hash, tag) => {
-    calls.push([id, 'tag', hash, tag]);
-    return { statusCode: 200 };
-  },
-  ...overrides
-});
+const makeClient = (id, overrides = {}) => {
+  const client = {
+    id,
+    alias: id,
+    status: true,
+    _client: { type: 'qBittorrent' },
+    avgUploadSpeed: 0,
+    avgDownloadSpeed: 0,
+    maindata: {
+      torrents: [],
+      leechingCount: 0,
+      uploadSpeed: 0,
+      downloadSpeed: 0,
+      freeSpaceOnDisk: 100
+    },
+    addTorrent: async (...args) => calls.push([id, ...args]),
+    addTorrentTag: async (hash, tag) => {
+      calls.push([id, 'tag', hash, tag]);
+      const taggedTorrent = client.maindata.torrents.find(item => item.hash === hash);
+      if (taggedTorrent) taggedTorrent.tags = tag;
+      else client.maindata.torrents.push({ hash, tags: tag });
+      return { statusCode: 200 };
+    },
+    getMaindata: async () => {}
+  };
+  return Object.assign(client, overrides);
+};
 
 const makeRss = (overrides = {}) => Object.assign(Object.create(Rss.prototype), {
   id: 'rss-id',
@@ -218,14 +224,17 @@ const test = async (name, fn) => {
 
   await test('auto reseed retries a failed tag request until qB confirms success', async () => {
     let tagAttempts = 0;
-    global.runningClient.reseed = makeClient('reseed', {
+    let reseedClient;
+    reseedClient = makeClient('reseed', {
       maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },
       addTorrentTag: async (hash, tag) => {
         calls.push(['reseed', 'tag', hash, tag]);
         tagAttempts += 1;
+        if (tagAttempts === 3) reseedClient.maindata.torrents.push({ hash, tags: tag });
         return { statusCode: tagAttempts === 3 ? 200 : 500 };
       }
     });
+    global.runningClient.reseed = reseedClient;
     global.runningClient.normal = makeClient('normal');
     const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
 
@@ -252,6 +261,28 @@ const test = async (name, fn) => {
     assert.equal(calls.filter(call => call[1] === 'tag').length, 3);
     assert.ok(records.some(values => values.includes('辅种（标签失败）')));
     assert.ok(!records.some(values => values.includes('辅种')));
+  });
+
+  await test('a qB success response without the actual tag is retried and recorded as a tag failure', async () => {
+    const records = [];
+    let maindataCalls = 0;
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },
+      addTorrentTag: async (hash, tag) => {
+        calls.push(['reseed', 'tag', hash, tag]);
+        return { statusCode: 200 };
+      },
+      getMaindata: async () => { maindataCalls += 1; }
+    });
+    global.runningClient.normal = makeClient('normal');
+    util.runRecord = async (_sql, values) => records.push(values);
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.equal(calls.filter(call => call[1] === 'tag').length, 3);
+    assert.equal(maindataCalls, 3);
+    assert.ok(records.some(values => values.includes('辅种（标签失败）')));
   });
 
   await test('a failed reseed metadata lookup falls back to the normal downloader', async () => {

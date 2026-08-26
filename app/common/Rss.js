@@ -234,8 +234,15 @@ class Rss {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const result = await client.addTorrentTag(hash, 'Reseed');
-        if (result && result.statusCode === 200) return;
-        lastError = new Error(`qB 添加 Reseed 标签返回状态码: ${result && result.statusCode}`);
+        if (result && result.statusCode === 200) {
+          await client.getMaindata();
+          const taggedTorrent = (client.maindata && client.maindata.torrents || []).find(item => item.hash === hash);
+          const tags = String(taggedTorrent && taggedTorrent.tags || '').split(',').map(item => item.trim());
+          if (tags.includes('Reseed')) return;
+          lastError = new Error('qB 未确认 Reseed 标签已生效');
+        } else {
+          lastError = new Error(`qB 添加 Reseed 标签返回状态码: ${result && result.statusCode}`);
+        }
       } catch (error) {
         lastError = error;
       }

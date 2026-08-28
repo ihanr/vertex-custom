@@ -326,8 +326,9 @@ class Client {
     if (!this.status) {
       throw new Error('客户端' + this.alias + '当前状态为不可用');
     }
-    const { statusCode } = await this.client.addTorrent(this.clientUrl, this.cookie, torrentUrl, isSkipChecking, uploadLimit, downloadLimit, savePath, category, autoTMM, this.firstLastPiecePrio, paused);
-    if (statusCode !== 200 && statusCode !== 204) {
+    const result = await this.client.addTorrent(this.clientUrl, this.cookie, torrentUrl, isSkipChecking, uploadLimit, downloadLimit, savePath, category, autoTMM, this.firstLastPiecePrio, paused);
+    const { statusCode } = result;
+    if (statusCode !== 200 && statusCode !== 202 && statusCode !== 204) {
       this.login();
       throw new Error('状态码: ' + statusCode);
     }
@@ -336,6 +337,7 @@ class Client {
     }
     await util.runRecord('insert into torrent_flow (hash, upload, download, time) values (?, ?, ?, ?)',
       [hash, 0, 0, moment().unix() - moment().unix() % 300]);
+    return result;
   };
 
   async addTorrentTag (hash, tag) {

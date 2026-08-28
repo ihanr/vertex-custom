@@ -254,6 +254,16 @@ class Rss {
     throw lastError;
   }
 
+  async _waitForReseedTorrent (client, hash) {
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      await util.sleep(1000);
+      await client.getMaindata();
+      const torrent = ((client.maindata && client.maindata.torrents) || []).find(item => item.hash === hash);
+      if (torrent) return;
+    }
+    throw new Error('qB 在 10 秒内未登记辅种种子');
+  }
+
   async _pushTorrent (torrent, _client, fitRule) {
     if (this.autoReseed && torrent.hash.indexOf('fakehash') === -1) {
       let bencodeInfo;
@@ -276,8 +286,9 @@ class Rss {
             }
             if (!bencodeInfo) continue;
             if (_torrent.name === bencodeInfo.name && _torrent.hash !== bencodeInfo.hash) {
+              let result;
               try {
-                await client.addTorrent(torrent.url, torrent.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category);
+                result = await client.addTorrent(torrent.url, torrent.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category);
                 this.addCount += 1;
               } catch (error) {
                 logger.error(this.alias, '下载器', client, '添加种子', torrent.name, '失败\n', error);
@@ -297,6 +308,7 @@ class Rss {
               try {
                 let note = '辅种';
                 try {
+                  if (result && result.statusCode === 202) await this._waitForReseedTorrent(client, torrent.hash);
                   await this._addReseedTag(client, torrent.hash);
                 } catch (tagError) {
                   note = '辅种（标签失败）';

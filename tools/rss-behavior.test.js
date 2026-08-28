@@ -243,6 +243,38 @@ const test = async (name, fn) => {
     assert.equal(tagAttempts, 3);
   });
 
+  await test('a pending reseed add waits for qB registration before applying the tag', async () => {
+    let maindataCalls = 0;
+    let tagBeforeRegistration = false;
+    let reseedClient;
+    reseedClient = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },
+      addTorrent: async (...args) => {
+        calls.push(['reseed', ...args]);
+        return { statusCode: 202 };
+      },
+      getMaindata: async () => {
+        maindataCalls += 1;
+        if (maindataCalls === 2) reseedClient.maindata.torrents.push({ hash: torrent.hash, tags: '' });
+      },
+      addTorrentTag: async (hash, tag) => {
+        calls.push(['reseed', 'tag', hash, tag]);
+        const taggedTorrent = reseedClient.maindata.torrents.find(item => item.hash === hash);
+        if (!taggedTorrent) tagBeforeRegistration = true;
+        else taggedTorrent.tags = tag;
+        return { statusCode: 200 };
+      }
+    });
+    global.runningClient.reseed = reseedClient;
+    global.runningClient.normal = makeClient('normal');
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.equal(tagBeforeRegistration, false);
+    assert.ok(maindataCalls >= 2);
+  });
+
   await test('a permanently failed tag is recorded as a tag failure', async () => {
     const records = [];
     global.runningClient.reseed = makeClient('reseed', {

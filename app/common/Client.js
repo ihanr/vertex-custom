@@ -34,6 +34,7 @@ class Client {
     this.sameServerClients = client.sameServerClients;
     this.maindata = null;
     this.getMaindataRunning = false;
+    this.getMaindataPromise = null;
     this.reseedTorrentIndex = new Map();
     this.maindataJob = cron.schedule(client.cron, () => this.getMaindata());
     this.spaceAlarm = client.spaceAlarm;
@@ -258,48 +259,51 @@ class Client {
     }
   };
 
-  async getMaindata () {
-    if (this.getMaindataRunning) return;
-    this.getMaindataRunning = true;
-    try {
-      if (!this.cookie) {
-        this.login();
-        return;
-      }
-      if (this.lastCookie < moment().unix() - 3000) {
-        this.login(false);
-        return;
-      }
-      const statusLeeching = ['downloading', 'stalledDL', 'Downloading'];
-      const statusSeeding = ['uploading', 'stalledUP', 'Seeding'];
+  async getMaindata (force = false) {
+    const previous = this.getMaindataPromise;
+    if (previous && !force) return previous;
+    const refresh = (async () => {
+      if (previous) await previous;
+      this.getMaindataRunning = true;
       try {
-        const maindata = await this.client.getMaindata(this.clientUrl, this.cookie);
-        if (typeof maindata === 'string') {
-          this.cookie.sessionId = maindata;
+        if (!this.cookie) {
+          this.login();
           return;
         }
-        this.maindata = maindata;
-        this.maindata.leechingCount = 0;
-        this.maindata.seedingCount = 0;
-        this.maindata.usedSpace = 0;
-        this.reseedTorrentIndex = new Map();
-        this.maindata.torrents.forEach((item) => {
-          item.trackerStatus = this.trackerStatus[item.hash] || '';
-          this.maindata.usedSpace += item.completed;
-          if (statusLeeching.indexOf(item.state) !== -1) {
-            this.maindata.leechingCount += 1;
-          } else if (statusSeeding.indexOf(item.state) !== -1) {
-            this.maindata.seedingCount += 1;
+        if (this.lastCookie < moment().unix() - 3000) {
+          this.login(false);
+          return;
+        }
+        const statusLeeching = ['downloading', 'stalledDL', 'Downloading'];
+        const statusSeeding = ['uploading', 'stalledUP', 'Seeding'];
+        try {
+          const maindata = await this.client.getMaindata(this.clientUrl, this.cookie);
+          if (typeof maindata === 'string') {
+            this.cookie.sessionId = maindata;
+            return;
           }
-          if (+item.completed === +item.size) {
-            const size = +item.size;
-            if (!this.reseedTorrentIndex.has(size)) this.reseedTorrentIndex.set(size, []);
-            this.reseedTorrentIndex.get(size).push(item);
-          }
-        });
-        this.avgDownloadSpeed = maindata.downloadSpeed * 0.1 + this.avgDownloadSpeed * 0.9;
-        this.avgUploadSpeed = maindata.uploadSpeed * 0.1 + this.avgUploadSpeed * 0.9;
-        /*
+          this.maindata = maindata;
+          this.maindata.leechingCount = 0;
+          this.maindata.seedingCount = 0;
+          this.maindata.usedSpace = 0;
+          this.reseedTorrentIndex = new Map();
+          this.maindata.torrents.forEach((item) => {
+            item.trackerStatus = this.trackerStatus[item.hash] || '';
+            this.maindata.usedSpace += item.completed;
+            if (statusLeeching.indexOf(item.state) !== -1) {
+              this.maindata.leechingCount += 1;
+            } else if (statusSeeding.indexOf(item.state) !== -1) {
+              this.maindata.seedingCount += 1;
+            }
+            if (+item.completed === +item.size) {
+              const size = +item.size;
+              if (!this.reseedTorrentIndex.has(size)) this.reseedTorrentIndex.set(size, []);
+              this.reseedTorrentIndex.get(size).push(item);
+            }
+          });
+          this.avgDownloadSpeed = maindata.downloadSpeed * 0.1 + this.avgDownloadSpeed * 0.9;
+          this.avgUploadSpeed = maindata.uploadSpeed * 0.1 + this.avgUploadSpeed * 0.9;
+          /*
       let serverSpeed;
       if (this.sameServerClients) {
         serverSpeed = {
@@ -313,27 +317,34 @@ class Client {
         };
       }
       */
-        logger.debug('下载器', this.alias, '获取种子信息成功');
-        this.status = true;
-        this.errorCount = 0;
-      } catch (error) {
-        logger.error('下载器', this.alias, '获取种子信息失败\n', error);
-        this.status = false;
-        this.maindata = null;
-        this.reseedTorrentIndex = new Map();
-        this.errorCount += 1;
-        if (this.errorCount > 5) {
-          await this.ntf.getMaindataError(this._client);
-          await this.login();
+          logger.debug('下载器', this.alias, '获取种子信息成功');
+          this.status = true;
+          this.errorCount = 0;
+        } catch (error) {
+          logger.error('下载器', this.alias, '获取种子信息失败\n', error);
+          this.status = false;
+          this.maindata = null;
+          this.reseedTorrentIndex = new Map();
+          this.errorCount += 1;
+          if (this.errorCount > 5) {
+            await this.ntf.getMaindataError(this._client);
+            await this.login();
+          }
         }
+        try {
+          if (this.monitor.push) await this.mnt.edit(this.messageId, this.maindata);
+        } catch (e) {
+          logger.error('推送监控报错', '\n', e);
+        }
+      } finally {
+        this.getMaindataRunning = false;
       }
-      try {
-        if (this.monitor.push) await this.mnt.edit(this.messageId, this.maindata);
-      } catch (e) {
-        logger.error('推送监控报错', '\n', e);
-      }
+    })();
+    this.getMaindataPromise = refresh;
+    try {
+      return await refresh;
     } finally {
-      this.getMaindataRunning = false;
+      if (this.getMaindataPromise === refresh) this.getMaindataPromise = null;
     }
   };
 

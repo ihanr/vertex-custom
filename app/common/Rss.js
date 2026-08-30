@@ -249,7 +249,7 @@ class Rss {
       try {
         const result = await client.addTorrentTag(hash, 'Reseed');
         if (result && result.statusCode === 200) {
-          await client.getMaindata();
+          await client.getMaindata(true);
           const taggedTorrent = ((client.maindata && client.maindata.torrents) || []).find(item => item.hash === hash);
           const tags = String((taggedTorrent && taggedTorrent.tags) || '').split(',').map(item => item.trim());
           if (tags.includes('Reseed')) return;
@@ -271,7 +271,7 @@ class Rss {
   async _waitForReseedTorrent (client, hash) {
     for (let attempt = 1; attempt <= 10; attempt++) {
       await util.sleep(1000);
-      await client.getMaindata();
+      await client.getMaindata(true);
       const torrent = ((client.maindata && client.maindata.torrents) || []).find(item => item.hash === hash);
       if (torrent) return;
     }
@@ -307,9 +307,9 @@ class Rss {
               result = await client.addTorrent(torrent.url, torrent.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category);
               this.addCount += 1;
             } catch (error) {
-              logger.error(this.alias, '下载器', client, '添加种子', torrent.name, '失败\n', error);
+              logger.error(this.alias, '下载器', client.alias, '添加种子', torrent.name, '失败\n', error);
               try {
-                await util.runRecord('INSERT INTO torrents (hash, name, size, rss_id, category, link, record_time, record_type, record_note) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                await util.runRecord('INSERT INTO torrents (hash, name, size, rss_id, category, link, record_time, record_type, record_note) values (?, ?, ?, ?, ?, ?, ?, ?, ?)',
                   [torrent.hash, torrent.name, torrent.size, this.id, this.category, torrent.link, moment().unix(), 3, '辅种失败']);
               } catch (recordError) {
                 logger.error(this.alias, '记录辅种失败信息失败\n', recordError);
@@ -334,7 +334,7 @@ class Rss {
                 [torrent.hash, torrent.name, torrent.size, this.id, this.category, torrent.link, moment().unix(), moment().unix(), 1, note]);
               await this.ntf.addTorrent(this._rss, client, torrent);
             } catch (error) {
-              logger.error(this.alias, '下载器', client, '辅种后标签、记录或通知失败\n', error);
+              logger.error(this.alias, '下载器', client.alias, '辅种后标签、记录或通知失败\n', error);
             }
             return;
           }

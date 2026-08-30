@@ -348,6 +348,25 @@ const test = async (name, fn) => {
     assert.ok(records.some(values => values.includes('辅种（标签失败）')));
   });
 
+  await test('confirms a reseed tag with a forced maindata refresh', async () => {
+    const refreshes = [];
+    const reseedClient = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },
+      addTorrentTag: async (hash, tag) => {
+        reseedClient.maindata.torrents.push({ hash, tags: tag });
+        return { statusCode: 200 };
+      },
+      getMaindata: async force => refreshes.push(force)
+    });
+    global.runningClient.reseed = reseedClient;
+    global.runningClient.normal = makeClient('normal');
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.ok(refreshes.includes(true));
+  });
+
   await test('a failed reseed metadata lookup falls back to the normal downloader', async () => {
     global.runningClient.reseed = makeClient('reseed', {
       maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] }
@@ -412,6 +431,39 @@ const test = async (name, fn) => {
     await rss._pushTorrent(torrent, global.runningClient.normal);
 
     assert.equal(rss.addCount, 1);
+  });
+
+  await test('records a reseed add failure with matching SQL parameters', async () => {
+    const records = [];
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },
+      addTorrent: async () => { throw new Error('reseed add failed'); }
+    });
+    global.runningClient.normal = makeClient('normal');
+    util.runRecord = async (sql, values) => records.push({ sql, values });
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    const failure = records.find(record => record.values.includes('辅种失败'));
+    assert.ok(failure);
+    assert.equal((failure.sql.match(/\?/g) || []).length, failure.values.length);
+  });
+
+  await test('does not put the reseed client object into an error log', async () => {
+    const logs = [];
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },
+      addTorrent: async () => { throw new Error('reseed add failed'); }
+    });
+    global.runningClient.normal = makeClient('normal');
+    logger.error = (...args) => logs.push(args);
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.ok(logs.some(args => args.includes('reseed')));
+    assert.ok(logs.every(args => !args.includes(global.runningClient.reseed)));
   });
 
   await test('missing legacy reseedClients behaves as an empty downloader list', async () => {

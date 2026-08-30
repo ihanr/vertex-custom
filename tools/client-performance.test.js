@@ -88,6 +88,44 @@ const test = async (name, fn) => {
     await Promise.all([first, second]);
   });
 
+  await test('waits for an in-flight maindata refresh before returning', async () => {
+    let resolveResponse;
+    let secondFinished = false;
+    const response = new Promise((resolve) => { resolveResponse = resolve; });
+    const client = makeClient({ client: { getMaindata: async () => response } });
+
+    const first = client.getMaindata();
+    const second = client.getMaindata().then(() => { secondFinished = true; });
+
+    await Promise.resolve();
+    assert.equal(secondFinished, false);
+    resolveResponse({ torrents: [], uploadSpeed: 0, downloadSpeed: 0 });
+    await Promise.all([first, second]);
+  });
+
+  await test('queues a fresh maindata refresh when forced during an in-flight refresh', async () => {
+    const responses = [];
+    let calls = 0;
+    const client = makeClient({
+      client: {
+        getMaindata: async () => {
+          calls += 1;
+          return new Promise(resolve => responses.push(resolve));
+        }
+      }
+    });
+
+    const first = client.getMaindata();
+    const forced = client.getMaindata(true);
+
+    assert.equal(calls, 1);
+    responses.shift()({ torrents: [], uploadSpeed: 0, downloadSpeed: 0 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 2);
+    responses.shift()({ torrents: [], uploadSpeed: 0, downloadSpeed: 0 });
+    await Promise.all([first, forced]);
+  });
+
   await test('builds a completed-torrent size index during maindata refresh', async () => {
     const client = makeClient({
       client: { getMaindata: async () => ({ torrents: [{ hash: 'done', size: 100, completed: 100, state: 'Seeding' }], uploadSpeed: 0, downloadSpeed: 0 }) }

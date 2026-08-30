@@ -33,6 +33,8 @@ class Client {
     this.maxLeechNum = client.maxLeechNum;
     this.sameServerClients = client.sameServerClients;
     this.maindata = null;
+    this.getMaindataRunning = false;
+    this.reseedTorrentIndex = new Map();
     this.maindataJob = cron.schedule(client.cron, () => this.getMaindata());
     this.spaceAlarm = client.spaceAlarm;
     this.spaceAlarmJob = cron.schedule('*/15 * * * *', () => this.pushSpaceAlarm());
@@ -257,38 +259,47 @@ class Client {
   };
 
   async getMaindata () {
-    if (!this.cookie) {
-      this.login();
-      return;
-    }
-    if (this.lastCookie < moment().unix() - 3000) {
-      this.login(false);
-      return;
-    }
-    const statusLeeching = ['downloading', 'stalledDL', 'Downloading'];
-    const statusSeeding = ['uploading', 'stalledUP', 'Seeding'];
+    if (this.getMaindataRunning) return;
+    this.getMaindataRunning = true;
     try {
-      const maindata = await this.client.getMaindata(this.clientUrl, this.cookie);
-      if (typeof maindata === 'string') {
-        this.cookie.sessionId = maindata;
+      if (!this.cookie) {
+        this.login();
         return;
       }
-      this.maindata = maindata;
-      this.maindata.leechingCount = 0;
-      this.maindata.seedingCount = 0;
-      this.maindata.usedSpace = 0;
-      this.maindata.torrents.forEach((item) => {
-        item.trackerStatus = this.trackerStatus[item.hash] || '';
-        this.maindata.usedSpace += item.completed;
-        if (statusLeeching.indexOf(item.state) !== -1) {
-          this.maindata.leechingCount += 1;
-        } else if (statusSeeding.indexOf(item.state) !== -1) {
-          this.maindata.seedingCount += 1;
+      if (this.lastCookie < moment().unix() - 3000) {
+        this.login(false);
+        return;
+      }
+      const statusLeeching = ['downloading', 'stalledDL', 'Downloading'];
+      const statusSeeding = ['uploading', 'stalledUP', 'Seeding'];
+      try {
+        const maindata = await this.client.getMaindata(this.clientUrl, this.cookie);
+        if (typeof maindata === 'string') {
+          this.cookie.sessionId = maindata;
+          return;
         }
-      });
-      this.avgDownloadSpeed = maindata.downloadSpeed * 0.1 + this.avgDownloadSpeed * 0.9;
-      this.avgUploadSpeed = maindata.uploadSpeed * 0.1 + this.avgUploadSpeed * 0.9;
-      /*
+        this.maindata = maindata;
+        this.maindata.leechingCount = 0;
+        this.maindata.seedingCount = 0;
+        this.maindata.usedSpace = 0;
+        this.reseedTorrentIndex = new Map();
+        this.maindata.torrents.forEach((item) => {
+          item.trackerStatus = this.trackerStatus[item.hash] || '';
+          this.maindata.usedSpace += item.completed;
+          if (statusLeeching.indexOf(item.state) !== -1) {
+            this.maindata.leechingCount += 1;
+          } else if (statusSeeding.indexOf(item.state) !== -1) {
+            this.maindata.seedingCount += 1;
+          }
+          if (+item.completed === +item.size) {
+            const size = +item.size;
+            if (!this.reseedTorrentIndex.has(size)) this.reseedTorrentIndex.set(size, []);
+            this.reseedTorrentIndex.get(size).push(item);
+          }
+        });
+        this.avgDownloadSpeed = maindata.downloadSpeed * 0.1 + this.avgDownloadSpeed * 0.9;
+        this.avgUploadSpeed = maindata.uploadSpeed * 0.1 + this.avgUploadSpeed * 0.9;
+        /*
       let serverSpeed;
       if (this.sameServerClients) {
         serverSpeed = {
@@ -302,23 +313,27 @@ class Client {
         };
       }
       */
-      logger.debug('下载器', this.alias, '获取种子信息成功');
-      this.status = true;
-      this.errorCount = 0;
-    } catch (error) {
-      logger.error('下载器', this.alias, '获取种子信息失败\n', error);
-      this.status = false;
-      this.maindata = null;
-      this.errorCount += 1;
-      if (this.errorCount > 5) {
-        await this.ntf.getMaindataError(this._client);
-        await this.login();
+        logger.debug('下载器', this.alias, '获取种子信息成功');
+        this.status = true;
+        this.errorCount = 0;
+      } catch (error) {
+        logger.error('下载器', this.alias, '获取种子信息失败\n', error);
+        this.status = false;
+        this.maindata = null;
+        this.reseedTorrentIndex = new Map();
+        this.errorCount += 1;
+        if (this.errorCount > 5) {
+          await this.ntf.getMaindataError(this._client);
+          await this.login();
+        }
       }
-    }
-    try {
-      if (this.monitor.push) await this.mnt.edit(this.messageId, this.maindata);
-    } catch (e) {
-      logger.error('推送监控报错', '\n', e);
+      try {
+        if (this.monitor.push) await this.mnt.edit(this.messageId, this.maindata);
+      } catch (e) {
+        logger.error('推送监控报错', '\n', e);
+      }
+    } finally {
+      this.getMaindataRunning = false;
     }
   };
 
@@ -478,6 +493,7 @@ class Client {
       torrentSet[i.hash] = i;
     });
     const trackerSet = {};
+    const records = [];
     for (const torrent of this.maindata.torrents) {
       const cache = await redis.get('vertex:torrent:' + torrent.hash);
       // 0 无记录  1 种子存在  2 种子不存在
@@ -487,10 +503,12 @@ class Client {
         if (!sqlRes) continue;
       }
       if (+cache === 2) continue;
-      await util.runRecord('update torrents set size = ?, tracker = ?, upload = ?, download = ? where hash = ?',
-        [torrent.size, torrent.tracker, torrent.uploaded, torrent.downloaded, torrent.hash]);
-      await util.runRecord('insert into torrent_flow (hash, upload, download, time) values (?, ?, ?, ?)',
-        [torrent.hash, torrent.uploaded, torrent.downloaded, now]);
+      records.push(
+        ['update torrents set size = ?, tracker = ?, upload = ?, download = ? where hash = ?',
+          [torrent.size, torrent.tracker, torrent.uploaded, torrent.downloaded, torrent.hash]],
+        ['insert into torrent_flow (hash, upload, download, time) values (?, ?, ?, ?)',
+          [torrent.hash, torrent.uploaded, torrent.downloaded, now]]
+      );
       if (!trackerSet[torrent.tracker]) trackerSet[torrent.tracker] = { upload: 0, download: 0, time: now };
       torrentSet[torrent.hash] = torrentSet[torrent.hash] || { upload: torrent.uploaded, download: torrent.downloaded };
       trackerSet[torrent.tracker].upload += torrent.uploaded - torrentSet[torrent.hash].upload;
@@ -500,11 +518,12 @@ class Client {
       const tracker = trackerSet[key];
       const record = await util.getRecord('select * from tracker_flow where tracker = ? and time = ?', [key, now]);
       if (!record) {
-        await util.runRecord('insert into tracker_flow (tracker, upload, download, time) values (?, ?, ?, ?)', [key, tracker.upload, tracker.download, now]);
+        records.push(['insert into tracker_flow (tracker, upload, download, time) values (?, ?, ?, ?)', [key, tracker.upload, tracker.download, now]]);
       } else {
-        await util.runRecord('update tracker_flow set upload = upload + ?, download = download + ? where tracker = ? and time = ?', [tracker.upload, tracker.download, key, now]);
+        records.push(['update tracker_flow set upload = upload + ?, download = download + ? where tracker = ? and time = ?', [tracker.upload, tracker.download, key, now]]);
       }
     }
+    if (records.length) await util.runRecords(records);
   };
 
   flashFitTime (rule) {
@@ -525,29 +544,40 @@ class Client {
 
   async trackerSync () {
     if (!this.maindata || !this.maindata.torrents || this.maindata.torrents.length === 0) return;
-    const torrents = this.maindata.torrents;
-    for (const torrent of torrents) {
+    const torrents = [...this.maindata.torrents];
+    const syncTorrent = async (torrent) => {
       try {
-        if (await redis.get(`vertex:torrent_tracker:${torrent.hash}`)) continue;
+        const statusCacheKey = `vertex:torrent_tracker_status:${torrent.hash}`;
+        const cachedStatus = await redis.get(statusCacheKey);
+        if (cachedStatus) {
+          this.trackerStatus[torrent.hash] = JSON.parse(cachedStatus);
+          return;
+        }
+        if (await redis.get(`vertex:torrent_tracker:${torrent.hash}`)) return;
         const sqlRes = await util.getRecord('SELECT * FROM torrents WHERE hash = ?', [torrent.hash]);
         if (!sqlRes || !!sqlRes.delete_time) {
           await redis.set(`vertex:torrent_tracker:${torrent.hash}`, 1);
-          continue;
+          return;
         };
         const { statusCode, body } = await this.client.getTrackerList(this.clientUrl, this.cookie, torrent.hash);
         if (statusCode === 404) {
           logger.debug('下载器', this.alias, '种子', torrent.name, 'tracker 状态同步 404');
-          continue;
+          return;
         }
         if (statusCode !== 200) {
           throw new Error('状态码: ' + statusCode);
         }
         const trackerList = JSON.parse(body);
         this.trackerStatus[torrent.hash] = trackerList.filter(i => i.url.indexOf('**') === -1).map(i => i.msg).join('');
+        await redis.setWithExpire(statusCacheKey, JSON.stringify(this.trackerStatus[torrent.hash]), 600);
       } catch (e) {
         logger.error('下载器', this.alias, '种子', torrent.name, 'tracker 状态同步失败, 报错如下:\n', e);
       }
-    }
+    };
+    const workers = Array.from({ length: Math.min(4, torrents.length) }, async () => {
+      while (torrents.length) await syncTorrent(torrents.shift());
+    });
+    await Promise.all(workers);
   };
 
   async pushSpaceAlarm () {

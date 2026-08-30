@@ -52,8 +52,9 @@ class Rss {
     this.maxClientUploadSpeed = util.calSize(rss.maxClientUploadSpeed, rss.maxClientUploadSpeedUnit);
     this.maxClientDownloadSpeed = util.calSize(rss.maxClientDownloadSpeed, rss.maxClientDownloadSpeedUnit);
     this.maxClientDownloadCount = +rss.maxClientDownloadCount;
+    this.rssRunning = false;
     if (!rss.dryrun) {
-      this.rssJob = cron.schedule(rss.cron, async () => { try { await this.rss(); } catch (e) { logger.error(this.alias, e); } });
+      this.rssJob = cron.schedule(rss.cron, async () => { try { await this._runRss(); } catch (e) { logger.error(this.alias, e); } });
       this.clearCount = cron.schedule('0 * * * *', () => { this.addCount = 0; });
       logger.info('Rss 任务', this.alias, '初始化完毕');
     }
@@ -78,6 +79,19 @@ class Rss {
   _getSum (a, b) {
     return a + b;
   };
+
+  async _runRss () {
+    if (this.rssRunning) {
+      logger.info(this.alias, '上一轮 RSS 尚未结束，跳过本轮');
+      return;
+    }
+    this.rssRunning = true;
+    try {
+      await this.rss();
+    } finally {
+      this.rssRunning = false;
+    }
+  }
 
   async _downloadTorrent (url, _hash) {
     if (_hash && fs.existsSync(path.join(__dirname, '../../torrents', _hash + '.torrent'))) {
@@ -274,54 +288,55 @@ class Rss {
           logger.error('Rss', this.alias, '下载器', key, '不可用');
           continue;
         }
-        for (const _torrent of client.maindata.torrents) {
-          if (+_torrent.size === +torrent.size && +_torrent.completed === +_torrent.size) {
-            if (!bencodeInfo && !bencodeLookupFailed) {
-              try {
-                bencodeInfo = await rss.getTorrentNameByBencode(torrent.url);
-              } catch (error) {
-                bencodeLookupFailed = true;
-                logger.error(this.alias, '获取辅种种子信息失败', torrent.name, error);
-              }
+        const candidates = client.reseedTorrentIndex
+          ? client.reseedTorrentIndex.get(+torrent.size) || []
+          : client.maindata.torrents.filter(item => +item.size === +torrent.size && +item.completed === +item.size);
+        for (const _torrent of candidates) {
+          if (!bencodeInfo && !bencodeLookupFailed) {
+            try {
+              bencodeInfo = await rss.getTorrentNameByBencode(torrent.url);
+            } catch (error) {
+              bencodeLookupFailed = true;
+              logger.error(this.alias, '获取辅种种子信息失败', torrent.name, error);
             }
-            if (!bencodeInfo) continue;
-            if (_torrent.name === bencodeInfo.name && _torrent.hash !== bencodeInfo.hash) {
-              let result;
+          }
+          if (!bencodeInfo) continue;
+          if (_torrent.name === bencodeInfo.name && _torrent.hash !== bencodeInfo.hash) {
+            let result;
+            try {
+              result = await client.addTorrent(torrent.url, torrent.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category);
+              this.addCount += 1;
+            } catch (error) {
+              logger.error(this.alias, '下载器', client, '添加种子', torrent.name, '失败\n', error);
               try {
-                result = await client.addTorrent(torrent.url, torrent.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category);
-                this.addCount += 1;
-              } catch (error) {
-                logger.error(this.alias, '下载器', client, '添加种子', torrent.name, '失败\n', error);
-                try {
-                  await util.runRecord('INSERT INTO torrents (hash, name, size, rss_id, category, link, record_time, record_type, record_note) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                    [torrent.hash, torrent.name, torrent.size, this.id, this.category, torrent.link, moment().unix(), 3, '辅种失败']);
-                } catch (recordError) {
-                  logger.error(this.alias, '记录辅种失败信息失败\n', recordError);
-                }
-                try {
-                  await this.ntf.addTorrentError(this._rss, client, torrent);
-                } catch (notifyError) {
-                  logger.error(this.alias, '发送辅种失败通知失败\n', notifyError);
-                }
-                continue;
+                await util.runRecord('INSERT INTO torrents (hash, name, size, rss_id, category, link, record_time, record_type, record_note) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                  [torrent.hash, torrent.name, torrent.size, this.id, this.category, torrent.link, moment().unix(), 3, '辅种失败']);
+              } catch (recordError) {
+                logger.error(this.alias, '记录辅种失败信息失败\n', recordError);
               }
               try {
-                let note = '辅种';
-                try {
-                  if (result && result.statusCode === 202) await this._waitForReseedTorrent(client, torrent.hash);
-                  await this._addReseedTag(client, torrent.hash);
-                } catch (tagError) {
-                  note = '辅种（标签失败）';
-                  logger.error(this.alias, '下载器', client.alias, '添加 Reseed 标签失败:', tagError.message);
-                }
-                await util.runRecord('INSERT INTO torrents (hash, name, size, rss_id, category, link, record_time, add_time, record_type, record_note) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                  [torrent.hash, torrent.name, torrent.size, this.id, this.category, torrent.link, moment().unix(), moment().unix(), 1, note]);
-                await this.ntf.addTorrent(this._rss, client, torrent);
-              } catch (error) {
-                logger.error(this.alias, '下载器', client, '辅种后标签、记录或通知失败\n', error);
+                await this.ntf.addTorrentError(this._rss, client, torrent);
+              } catch (notifyError) {
+                logger.error(this.alias, '发送辅种失败通知失败\n', notifyError);
               }
-              return;
+              continue;
             }
+            try {
+              let note = '辅种';
+              try {
+                if (result && result.statusCode === 202) await this._waitForReseedTorrent(client, torrent.hash);
+                await this._addReseedTag(client, torrent.hash);
+              } catch (tagError) {
+                note = '辅种（标签失败）';
+                logger.error(this.alias, '下载器', client.alias, '添加 Reseed 标签失败:', tagError.message);
+              }
+              await util.runRecord('INSERT INTO torrents (hash, name, size, rss_id, category, link, record_time, add_time, record_type, record_note) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [torrent.hash, torrent.name, torrent.size, this.id, this.category, torrent.link, moment().unix(), moment().unix(), 1, note]);
+              await this.ntf.addTorrent(this._rss, client, torrent);
+            } catch (error) {
+              logger.error(this.alias, '下载器', client, '辅种后标签、记录或通知失败\n', error);
+            }
+            return;
           }
         }
       }

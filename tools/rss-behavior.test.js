@@ -222,10 +222,42 @@ const test = async (name, fn) => {
     ]);
   });
 
+  await test('auto reseed uses the completed-torrent size index when available', async () => {
+    const completedTorrent = { size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' };
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [] },
+      reseedTorrentIndex: new Map([[100, [completedTorrent]]])
+    });
+    global.runningClient.normal = makeClient('normal');
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.equal(calls[0][0], 'reseed');
+    assert.equal(calls[0][3], true);
+  });
+
+  await test('coalesces overlapping RSS runs', async () => {
+    let runs = 0;
+    let resolveRun;
+    const rss = makeRss({
+      rss: async () => {
+        runs += 1;
+        await new Promise((resolve) => { resolveRun = resolve; });
+      }
+    });
+
+    const first = rss._runRss();
+    const second = rss._runRss();
+
+    assert.equal(runs, 1);
+    resolveRun();
+    await Promise.all([first, second]);
+  });
+
   await test('auto reseed retries a failed tag request until qB confirms success', async () => {
     let tagAttempts = 0;
-    let reseedClient;
-    reseedClient = makeClient('reseed', {
+    const reseedClient = makeClient('reseed', {
       maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },
       addTorrentTag: async (hash, tag) => {
         calls.push(['reseed', 'tag', hash, tag]);
@@ -246,8 +278,7 @@ const test = async (name, fn) => {
   await test('a pending reseed add waits for qB registration before applying the tag', async () => {
     let maindataCalls = 0;
     let tagBeforeRegistration = false;
-    let reseedClient;
-    reseedClient = makeClient('reseed', {
+    const reseedClient = makeClient('reseed', {
       maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },
       addTorrent: async (...args) => {
         calls.push(['reseed', ...args]);

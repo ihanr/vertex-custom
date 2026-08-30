@@ -53,6 +53,14 @@ exports.runRecord = async function (sql, options = []) {
   return db.prepare(sql).run(...options);
 };
 
+exports.runRecords = async function (records) {
+  return db.transaction(() => {
+    for (const [sql, options] of records) {
+      db.prepare(sql).run(...options);
+    }
+  })();
+};
+
 exports.getRecord = async function (sql, options = []) {
   let _sql = sql;
   if (options) {

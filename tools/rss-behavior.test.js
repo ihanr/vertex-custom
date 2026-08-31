@@ -135,8 +135,49 @@ const test = async (name, fn) => {
 
     assert.deepEqual(calls, [
       ['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', ''],
-      ['reseed', 'tag', torrent.hash, 'Reseed']
+      ['reseed', 'tag', torrent.hash, 'Reseed'],
+      ['reseed', 'tag', 'old-hash', 'Brseed']
     ]);
+  });
+
+  await test('marks the original source torrent even when the new reseed tag fails', async () => {
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },
+      addTorrentTag: async (hash, tag) => {
+        calls.push(['reseed', 'tag', hash, tag]);
+        if (hash === torrent.hash) return { statusCode: 500 };
+        const source = global.runningClient.reseed.maindata.torrents.find(item => item.hash === hash);
+        source.tags = tag;
+        return { statusCode: 200 };
+      }
+    });
+    global.runningClient.normal = makeClient('normal');
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.ok(calls.some(call => call[1] === 'tag' && call[2] === 'old-hash' && call[3] === 'Brseed'));
+  });
+
+  await test('records a source Brseed confirmation failure instead of silently succeeding', async () => {
+    const records = [];
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data', tags: '' }] },
+      addTorrentTag: async (hash, tag) => {
+        calls.push(['reseed', 'tag', hash, tag]);
+        if (hash === 'old-hash') return { statusCode: 200 };
+        global.runningClient.reseed.maindata.torrents.push({ hash, tags: tag });
+        return { statusCode: 200 };
+      }
+    });
+    global.runningClient.normal = makeClient('normal');
+    util.runRecord = async (_sql, values) => records.push(values);
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.equal(calls.filter(call => call[1] === 'tag' && call[2] === 'old-hash').length, 3);
+    assert.ok(records.some(values => values.includes('辅种（标签失败）')));
   });
 
   await test('auto reseed falls back to the selected normal downloader when no data matches', async () => {
@@ -194,7 +235,8 @@ const test = async (name, fn) => {
 
     assert.deepEqual(calls, [
       ['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', ''],
-      ['reseed', 'tag', torrent.hash, 'Reseed']
+      ['reseed', 'tag', torrent.hash, 'Reseed'],
+      ['reseed', 'tag', 'old-hash', 'Brseed']
     ]);
   });
 
@@ -218,7 +260,8 @@ const test = async (name, fn) => {
 
     assert.deepEqual(calls, [
       ['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', ''],
-      ['reseed', 'tag', torrent.hash, 'Reseed']
+      ['reseed', 'tag', torrent.hash, 'Reseed'],
+      ['reseed', 'tag', 'old-hash', 'Brseed']
     ]);
   });
 
@@ -256,14 +299,19 @@ const test = async (name, fn) => {
   });
 
   await test('auto reseed retries a failed tag request until qB confirms success', async () => {
-    let tagAttempts = 0;
+    let newTagAttempts = 0;
     const reseedClient = makeClient('reseed', {
       maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },
       addTorrentTag: async (hash, tag) => {
         calls.push(['reseed', 'tag', hash, tag]);
-        tagAttempts += 1;
-        if (tagAttempts === 3) reseedClient.maindata.torrents.push({ hash, tags: tag });
-        return { statusCode: tagAttempts === 3 ? 200 : 500 };
+        if (hash !== torrent.hash) {
+          const source = reseedClient.maindata.torrents.find(item => item.hash === hash);
+          source.tags = tag;
+          return { statusCode: 200 };
+        }
+        newTagAttempts += 1;
+        if (newTagAttempts === 3) reseedClient.maindata.torrents.push({ hash, tags: tag });
+        return { statusCode: newTagAttempts === 3 ? 200 : 500 };
       }
     });
     global.runningClient.reseed = reseedClient;
@@ -272,7 +320,7 @@ const test = async (name, fn) => {
 
     await rss._pushTorrent(torrent, global.runningClient.normal);
 
-    assert.equal(tagAttempts, 3);
+    assert.equal(newTagAttempts, 3);
   });
 
   await test('a pending reseed add waits for qB registration before applying the tag', async () => {
@@ -321,7 +369,8 @@ const test = async (name, fn) => {
 
     await rss._pushTorrent(torrent, global.runningClient.normal);
 
-    assert.equal(calls.filter(call => call[1] === 'tag').length, 3);
+    assert.equal(calls.filter(call => call[1] === 'tag' && call[2] === torrent.hash).length, 3);
+    assert.equal(calls.filter(call => call[1] === 'tag' && call[2] === 'old-hash').length, 3);
     assert.ok(records.some(values => values.includes('辅种（标签失败）')));
     assert.ok(!records.some(values => values.includes('辅种')));
   });
@@ -343,8 +392,9 @@ const test = async (name, fn) => {
 
     await rss._pushTorrent(torrent, global.runningClient.normal);
 
-    assert.equal(calls.filter(call => call[1] === 'tag').length, 3);
-    assert.equal(maindataCalls, 3);
+    assert.equal(calls.filter(call => call[1] === 'tag' && call[2] === torrent.hash).length, 3);
+    assert.equal(calls.filter(call => call[1] === 'tag' && call[2] === 'old-hash').length, 3);
+    assert.equal(maindataCalls, 6);
     assert.ok(records.some(values => values.includes('辅种（标签失败）')));
   });
 

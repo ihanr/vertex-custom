@@ -243,25 +243,25 @@ class Rss {
     )[0];
   }
 
-  async _addReseedTag (client, hash) {
+  async _addReseedTag (client, hash, tag = 'Reseed') {
     let lastError;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        const result = await client.addTorrentTag(hash, 'Reseed');
+        const result = await client.addTorrentTag(hash, tag);
         if (result && result.statusCode === 200) {
           await client.getMaindata(true);
           const taggedTorrent = ((client.maindata && client.maindata.torrents) || []).find(item => item.hash === hash);
           const tags = String((taggedTorrent && taggedTorrent.tags) || '').split(',').map(item => item.trim());
-          if (tags.includes('Reseed')) return;
-          lastError = new Error('qB 未确认 Reseed 标签已生效');
+          if (tags.includes(tag)) return;
+          lastError = new Error(`qB 未确认 ${tag} 标签已生效`);
         } else {
-          lastError = new Error(`qB 添加 Reseed 标签返回状态码: ${result && result.statusCode}`);
+          lastError = new Error(`qB 添加 ${tag} 标签返回状态码: ${result && result.statusCode}`);
         }
       } catch (error) {
         lastError = error;
       }
       if (attempt < 3) {
-        logger.error(this.alias, '下载器', client.alias, `添加 Reseed 标签第 ${attempt} 次失败:`, lastError.message);
+        logger.error(this.alias, '下载器', client.alias, `添加 ${tag} 标签第 ${attempt} 次失败:`, lastError.message);
         await util.sleep(1000);
       }
     }
@@ -323,13 +323,22 @@ class Rss {
             }
             try {
               let note = '辅种';
+              const tagFailures = [];
               try {
                 if (result && result.statusCode === 202) await this._waitForReseedTorrent(client, torrent.hash);
-                await this._addReseedTag(client, torrent.hash);
               } catch (tagError) {
-                note = '辅种（标签失败）';
-                logger.error(this.alias, '下载器', client.alias, '添加 Reseed 标签失败:', tagError.message);
+                tagFailures.push('Reseed');
+                logger.error(this.alias, '下载器', client.alias, '等待 Reseed 标签种子失败:', tagError.message);
               }
+              for (const [hash, tag] of [[torrent.hash, 'Reseed'], [_torrent.hash, 'Brseed']]) {
+                try {
+                  await this._addReseedTag(client, hash, tag);
+                } catch (tagError) {
+                  tagFailures.push(tag);
+                  logger.error(this.alias, '下载器', client.alias, `添加 ${tag} 标签失败:`, tagError.message);
+                }
+              }
+              if (tagFailures.length) note = '辅种（标签失败）';
               await util.runRecord('INSERT INTO torrents (hash, name, size, rss_id, category, link, record_time, add_time, record_type, record_note) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 [torrent.hash, torrent.name, torrent.size, this.id, this.category, torrent.link, moment().unix(), moment().unix(), 1, note]);
               await this.ntf.addTorrent(this._rss, client, torrent);

@@ -270,10 +270,10 @@ class Rss {
 
   async _waitForReseedTorrent (client, hash) {
     for (let attempt = 1; attempt <= 10; attempt++) {
-      await util.sleep(1000);
       await client.getMaindata(true);
       const torrent = ((client.maindata && client.maindata.torrents) || []).find(item => item.hash === hash);
       if (torrent) return;
+      if (attempt < 10) await util.sleep(1000);
     }
     throw new Error('qB 在 10 秒内未登记辅种种子');
   }
@@ -302,9 +302,8 @@ class Rss {
           }
           if (!bencodeInfo) continue;
           if (_torrent.name === bencodeInfo.name && _torrent.hash !== bencodeInfo.hash) {
-            let result;
             try {
-              result = await client.addTorrent(torrent.url, torrent.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category);
+              await client.addTorrent(torrent.url, torrent.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category);
               this.addCount += 1;
             } catch (error) {
               logger.error(this.alias, '下载器', client.alias, '添加种子', torrent.name, '失败\n', error);
@@ -325,17 +324,18 @@ class Rss {
               let note = '辅种';
               const tagFailures = [];
               try {
-                if (result && result.statusCode === 202) await this._waitForReseedTorrent(client, torrent.hash);
+                await this._waitForReseedTorrent(client, torrent.hash);
+                await this._addReseedTag(client, torrent.hash, 'Reseed');
               } catch (tagError) {
                 tagFailures.push('Reseed');
                 logger.error(this.alias, '下载器', client.alias, '等待 Reseed 标签种子失败:', tagError.message);
               }
-              for (const [hash, tag] of [[torrent.hash, 'Reseed'], [_torrent.hash, 'Brseed']]) {
+              if (!tagFailures.length) {
                 try {
-                  await this._addReseedTag(client, hash, tag);
+                  await this._addReseedTag(client, _torrent.hash, 'Brseed');
                 } catch (tagError) {
-                  tagFailures.push(tag);
-                  logger.error(this.alias, '下载器', client.alias, `添加 ${tag} 标签失败:`, tagError.message);
+                  tagFailures.push('Brseed');
+                  logger.error(this.alias, '下载器', client.alias, '添加 Brseed 标签失败:', tagError.message);
                 }
               }
               if (tagFailures.length) note = '辅种（标签失败）';

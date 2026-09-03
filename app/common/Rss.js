@@ -302,6 +302,10 @@ class Rss {
           }
           if (!bencodeInfo) continue;
           if (_torrent.name === bencodeInfo.name && _torrent.hash !== bencodeInfo.hash) {
+            if (client.maindata.torrents.some(item => item.hash === torrent.hash)) {
+              logger.info(this.alias, '下载器', client.alias, '辅种新种已存在，跳过:', torrent.name);
+              return;
+            }
             try {
               await client.addTorrent(torrent.url, torrent.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category);
               this.addCount += 1;
@@ -321,7 +325,7 @@ class Rss {
               continue;
             }
             try {
-              let note = '辅种';
+              let note = `辅种（原种: ${_torrent.hash}；下载器: ${client.alias}）`;
               const tagFailures = [];
               try {
                 await this._waitForReseedTorrent(client, torrent.hash);

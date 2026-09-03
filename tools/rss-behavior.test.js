@@ -146,6 +146,35 @@ const test = async (name, fn) => {
     ]);
   });
 
+  await test('auto reseed skips an existing new hash without marking a source torrent', async () => {
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [
+        { size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' },
+        { hash: torrent.hash, tags: '' }
+      ] }
+    });
+    global.runningClient.normal = makeClient('normal');
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.deepEqual(calls, []);
+  });
+
+  await test('auto reseed records the source hash and downloader alias', async () => {
+    const records = [];
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] }
+    });
+    global.runningClient.normal = makeClient('normal');
+    util.runRecord = async (_sql, values) => records.push(values);
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'] });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.ok(records.some(values => values.includes('辅种（原种: old-hash；下载器: reseed）')));
+  });
+
   await test('does not mark the original source torrent when the new reseed tag fails', async () => {
     global.runningClient.reseed = makeClient('reseed', {
       maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] },

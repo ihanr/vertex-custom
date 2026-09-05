@@ -2,6 +2,7 @@ const util = require('../libs/util');
 const logger = require('../libs/logger');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const assertClientResult = require('../libs/client-result');
 
 class TorrentMod {
   async list (options) {
@@ -550,10 +551,11 @@ class TorrentMod {
     const client = global.runningClient[options.clientId];
     let isError = false;
     try {
-      await client.client.deleteTorrent(client.clientUrl, client.cookie, options.hash, true);
+      assertClientResult(await client.client.deleteTorrent(client.clientUrl, client.cookie, options.hash, true));
     } catch (e) {
       isError = true;
       logger.error('删除种子失败: ', e);
+      throw new Error('下载器未确认删除，已停止后续文件删除');
     }
     for (const file of options.files) {
       const { server, filepath } = file;

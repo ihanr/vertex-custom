@@ -1,5 +1,7 @@
 const logger = require('../libs/logger');
 const SettingMod = require('../model/SettingMod');
+const fs = require('fs');
+const path = require('path');
 
 const settingMod = new SettingMod();
 
@@ -202,11 +204,14 @@ class Setting {
   async backupVertex (req, res) {
     try {
       const file = await settingMod.backupVertex(req.query);
-      res.download(file);
+      res.download(file, error => {
+        try { fs.rmSync(path.dirname(file), { recursive: true, force: true }); } catch (cleanupError) { logger.error('清理备份临时目录失败:', cleanupError.message); }
+        if (error && !res.headersSent && !res.destroyed) res.status(500).send({ success: false, message: '下载备份失败' });
+      });
     } catch (e) {
       logger.error(e);
       res.send({
-        success: true,
+        success: false,
         message: e.message
       });
     }

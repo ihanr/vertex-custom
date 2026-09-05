@@ -1,4 +1,4 @@
-const Multipart = require('connect-multiparty');
+const backupUpload = require('../libs/backup-upload');
 const session = require('express-session');
 const proxy = require('express-http-proxy');
 const redis = require('redis');
@@ -12,8 +12,6 @@ const util = require('../libs/util');
 
 const client = redis.createClient(config.getRedisConfig());
 const RedisStore = require('connect-redis')(session);
-
-const multipartMiddleware = new Multipart();
 
 client.on('error', (err) => {
   logger.error('Redis:', err);
@@ -134,12 +132,11 @@ module.exports = function (app, express, router) {
       sameSite: 'lax'
     }
   }));
+  app.use(setIp);
+  app.use(checkAuth);
   app.use('/api', express.text({ type: 'text/xml' }));
   app.use('/api', express.json({ limit: '50mb' }));
   app.use('/api', express.urlencoded({ extended: false }));
-  app.use('/api', multipartMiddleware);
-  app.use(setIp);
-  app.use(checkAuth);
   router.post('/user/login', ctrl.User.login);
   router.get('/user/logout', ctrl.User.logout);
   router.get('/user/get', ctrl.User.get);
@@ -270,7 +267,7 @@ module.exports = function (app, express, router) {
   router.post('/setting/modifyTorrentPushSetting', ctrl.Setting.modifyTorrentPushSetting);
   router.post('/setting/modifySitePushSetting', ctrl.Setting.modifySitePushSetting);
   router.get('/setting/backupVertex', ctrl.Setting.backupVertex);
-  router.post('/setting/restoreVertex', ctrl.Setting.restoreVertex);
+  router.post('/setting/restoreVertex', backupUpload, ctrl.Setting.restoreVertex);
   router.get('/setting/getCss.css', ctrl.Setting.getCss);
   router.post('/setting/loginMTeam', ctrl.Setting.loginMTeam);
   router.post('/setting/networkTest', ctrl.Setting.networkTest);

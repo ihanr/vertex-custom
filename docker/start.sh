@@ -1,10 +1,8 @@
 #! /bin/bash
 
-if [ -d '/tmp/vertex' ]; then
-  rm -rf /vertex/*
-  mv /tmp/vertex/* /vertex
-  rm -rf /tmp/vertex
-fi
+# Only validated manifests may trigger restore. Legacy /tmp/vertex is ignored.
+# A failed or interrupted restore must never clear the mounted data directory.
+node /app/vertex/app/libs/backup.js /vertex || exit 1
 
 if [ ! -d '/vertex/data' ]; then
   mkdir /vertex/data/rss -p

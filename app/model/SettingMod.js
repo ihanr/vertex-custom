@@ -5,6 +5,7 @@ const util = require('../libs/util');
 const redis = require('../libs/redis');
 const Push = require('../common/Push');
 const otp = require('../libs/otp');
+const backup = require('../libs/backup');
 
 const settingPath = path.join(__dirname, '../data/setting.json');
 const proxyPath = path.join(__dirname, '../data/setting/proxy.json');
@@ -168,27 +169,13 @@ class SettingMod {
   };
 
   async backupVertex (options) {
-    const backupsFile = `/tmp/Vertex-backups-${moment().format('YYYY-MM-DD_HH:mm:ss')}.tar.gz`;
-    const backupsFileds = ['vertex/db', 'vertex/data', 'vertex/config'];
-    if (options.bt + '' === 'true') {
-      backupsFileds.push('vertex/torrents');
-    }
-    await util.tar.c({
-      gzip: true,
-      file: backupsFile,
-      cwd: global.dataPath
-    }, backupsFileds);
-    return backupsFile;
+    return backup.createArchive(path.join(global.dataPath || '/', 'vertex'), options.bt + '' === 'true', util.backupDatabase);
   }
 
   async restoreVertex (options) {
-    const backupsFile = options.file.path || options.file.originalFilename;
-    await util.tar.x({
-      gzip: true,
-      file: backupsFile,
-      C: '/tmp'
-    });
-    return '数据导入成功, 重启容器后生效。';
+    if (!options || !options.file || !options.file.path || Array.isArray(options.file)) throw new Error('请选择一个备份文件');
+    await backup.stageRestore(options.file.path, path.join(global.dataPath || '/', 'vertex'));
+    return '备份校验通过，重启容器后切换；旧数据将保留用于回滚。';
   }
 
   async networkTest (options) {

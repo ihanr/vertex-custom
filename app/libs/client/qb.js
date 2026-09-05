@@ -156,6 +156,19 @@ exports.addTorrentTag = async function (clientUrl, cookie, hash, tag) {
   return res;
 };
 
+exports.findTorrent = async function (clientUrl, cookie, hash) {
+  const res = await util.requestPromise({
+    url: clientUrl + '/api/v2/torrents/info',
+    qs: { hashes: hash },
+    headers: { cookie },
+    timeout: 15000
+  });
+  if (res.statusCode !== 200) throw new Error('查询种子状态失败: ' + res.statusCode);
+  const torrents = JSON.parse(res.body);
+  if (!Array.isArray(torrents)) throw new Error('查询种子返回格式无效');
+  return torrents.find(torrent => torrent.hash.toLowerCase() === hash.toLowerCase());
+};
+
 exports.deleteTorrent = async function (clientUrl, cookie, hash, isDeleteFiles) {
   await exports.pauseTorrent(clientUrl, cookie, hash);
   const message = {

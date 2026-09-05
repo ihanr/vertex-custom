@@ -18,6 +18,7 @@ const originalLoad = Module._load;
 Module._load = function (request, parent, isMain) {
   if (parent && path.normalize(parent.filename).endsWith(path.join('app', 'common', 'Rss.js'))) {
     if (request === '../libs/rss') return rssApi;
+    if (request === '../libs/rss-actions') return { get: async () => undefined, save: async () => {}, remove: async () => {}, list: async () => [] };
     if (request === '../libs/redis') return {};
     if (request === '../libs/util') return util;
     if (request === '../libs/logger') return logger;
@@ -228,7 +229,7 @@ const test = async (name, fn) => {
     await rss._pushTorrent(torrent, global.runningClient.normal);
 
     assert.equal(calls.filter(call => call[1] === 'tag' && call[2] === 'old-hash').length, 3);
-    assert.ok(records.some(values => values.includes('辅种（标签失败）')));
+    assert.ok(records.some(values => values.some(value => typeof value === 'string' && value.includes('标签失败'))));
   });
 
   await test('auto reseed falls back to the selected normal downloader when no data matches', async () => {
@@ -422,7 +423,7 @@ const test = async (name, fn) => {
 
     assert.equal(calls.filter(call => call[1] === 'tag' && call[2] === torrent.hash).length, 3);
     assert.equal(calls.filter(call => call[1] === 'tag' && call[2] === 'old-hash').length, 0);
-    assert.ok(records.some(values => values.includes('辅种（标签失败）')));
+    assert.ok(records.some(values => values.some(value => typeof value === 'string' && value.includes('标签失败'))));
     assert.ok(!records.some(values => values.includes('辅种')));
   });
 
@@ -446,7 +447,7 @@ const test = async (name, fn) => {
     assert.equal(calls.filter(call => call[1] === 'tag' && call[2] === torrent.hash).length, 3);
     assert.equal(calls.filter(call => call[1] === 'tag' && call[2] === 'old-hash').length, 0);
     assert.equal(maindataCalls, 4);
-    assert.ok(records.some(values => values.includes('辅种（标签失败）')));
+    assert.ok(records.some(values => values.some(value => typeof value === 'string' && value.includes('标签失败'))));
   });
 
   await test('confirms a reseed tag with a forced maindata refresh', async () => {

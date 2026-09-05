@@ -30,6 +30,7 @@ for (const k of Object.keys(util)) {
 }
 
 exports.redlock = redlock;
+exports.backupDatabase = file => db.backup(file);
 
 exports.getRecords = async function (sql, options = []) {
   let _sql = sql;

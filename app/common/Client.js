@@ -7,6 +7,7 @@ const moment = require('moment');
 const logger = require('../libs/logger');
 const cron = require('node-cron');
 const Push = require('./Push');
+const assertClientResult = require('../libs/client-result');
 
 const clients = {
   qBittorrent: qb,
@@ -174,6 +175,7 @@ class Client {
   };
 
   destroy () {
+    this.destroyed = true;
     logger.info('销毁下载器实例', this.alias);
     this.maindataJob.stop();
     delete this.maindataJob;
@@ -283,6 +285,7 @@ class Client {
             return;
           }
           this.maindata = maindata;
+          this.maindataUpdatedAt = Date.now();
           this.maindata.leechingCount = 0;
           this.maindata.seedingCount = 0;
           this.maindata.usedSpace = 0;
@@ -348,23 +351,54 @@ class Client {
     }
   };
 
-  async addTorrent (torrentUrl, hash, isSkipChecking = false, uploadLimit = 0, downloadLimit = 0, savePath, category, autoTMM, paused) {
-    if (!this.status) {
+  getLeechingCount () {
+    let count = this.maindata ? this.maindata.leechingCount : 0;
+    for (const [hash, pending] of this.pendingDownloadAdds || []) {
+      const observed = this.maindata && this.maindata.torrents.some(t => t.hash === hash);
+      if (!pending.inFlight && (observed || (pending.expires < Date.now() && this.maindataUpdatedAt > pending.expires))) {
+        this.pendingDownloadAdds.delete(hash);
+      } else if (!observed) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  async _addTorrent (send, hash, isSkipChecking) {
+    if (!this.status || this.destroyed) {
       throw new Error('客户端' + this.alias + '当前状态为不可用');
     }
-    const result = await this.client.addTorrent(this.clientUrl, this.cookie, torrentUrl, isSkipChecking, uploadLimit, downloadLimit, savePath, category, autoTMM, this.firstLastPiecePrio, paused);
-    const { statusCode } = result;
-    if (statusCode !== 200 && statusCode !== 202 && statusCode !== 204) {
-      this.login();
-      throw new Error('状态码: ' + statusCode);
+    if (!this.pendingDownloadAdds) this.pendingDownloadAdds = new Map();
+    if (!isSkipChecking && ((this.maxLeechNum && this.getLeechingCount() >= this.maxLeechNum) || this.pendingDownloadAdds.has(hash))) {
+      throw new Error('下载器任务上限或添加请求尚未完成');
     }
-    if (this.maindata) {
-      this.maindata.leechingCount += 1;
+    const pending = { inFlight: true, expires: 0 };
+    if (!isSkipChecking) this.pendingDownloadAdds.set(hash, pending);
+    let result;
+    try {
+      result = await send();
+      assertClientResult(result);
+    } catch (error) {
+      if (result) this.pendingDownloadAdds.delete(hash);
+      // A transport failure may have happened after qB accepted the request.
+      error.addUncertain = !result;
+      throw error;
+    } finally {
+      pending.inFlight = false;
+      pending.expires = Date.now() + 120000;
     }
-    await util.runRecord('insert into torrent_flow (hash, upload, download, time) values (?, ?, ?, ?)',
-      [hash, 0, 0, moment().unix() - moment().unix() % 300]);
+    try {
+      await util.runRecord('insert into torrent_flow (hash, upload, download, time) values (?, ?, ?, ?)',
+        [hash, 0, 0, moment().unix() - moment().unix() % 300]);
+    } catch (error) {
+      logger.error('下载器', this.alias, '种子已接收，但流量记录失败:', hash, error.message);
+    }
     return result;
   };
+
+  async addTorrent (torrentUrl, hash, isSkipChecking = false, uploadLimit = 0, downloadLimit = 0, savePath, category, autoTMM, paused) {
+    return this._addTorrent(() => this.client.addTorrent(this.clientUrl, this.cookie, torrentUrl, isSkipChecking, uploadLimit, downloadLimit, savePath, category, autoTMM, this.firstLastPiecePrio, paused), hash, isSkipChecking);
+  }
 
   async addTorrentTag (hash, tag) {
     if (this._client.type === 'qBittorrent') {
@@ -372,17 +406,19 @@ class Client {
     }
   }
 
+  async findTorrent (hash) {
+    if (this.destroyed || !this.status || this._client.type !== 'qBittorrent' || !/^[a-f0-9]{40}$/i.test(hash)) {
+      throw new Error('无法安全确认下载器种子状态');
+    }
+    const torrent = await this.client.findTorrent(this.clientUrl, this.cookie, hash);
+    if (!torrent && this.pendingDownloadAdds && this.pendingDownloadAdds.get(hash)?.expires < Date.now()) {
+      this.pendingDownloadAdds.delete(hash);
+    }
+    return torrent;
+  }
+
   async addTorrentByTorrentFile (filepath, hash, isSkipChecking = false, uploadLimit = 0, downloadLimit = 0, savePath, category, autoTMM, paused) {
-    const { statusCode } = await this.client.addTorrentByTorrentFile(this.clientUrl, this.cookie, filepath, isSkipChecking, uploadLimit, downloadLimit, savePath, category, autoTMM, this.firstLastPiecePrio, paused);
-    if (statusCode !== 200 && statusCode !== 204) {
-      this.login();
-      throw new Error('状态码: ' + statusCode);
-    }
-    if (this.maindata) {
-      this.maindata.leechingCount += 1;
-    }
-    await util.runRecord('insert into torrent_flow (hash, upload, download, time) values (?, ?, ?, ?)',
-      [hash, 0, 0, moment().unix() - moment().unix() % 300]);
+    return this._addTorrent(() => this.client.addTorrentByTorrentFile(this.clientUrl, this.cookie, filepath, isSkipChecking, uploadLimit, downloadLimit, savePath, category, autoTMM, this.firstLastPiecePrio, paused), hash, isSkipChecking);
   };
 
   async reannounceTorrent (torrent) {
@@ -414,13 +450,16 @@ class Client {
         await this.pauseTorrent(torrent.hash);
         this.pausedTorrentHashes.push(torrent.hash);
       } else {
-        await this.client.deleteTorrent(this.clientUrl, this.cookie, torrent.hash, isDeleteFiles);
+        assertClientResult(await this.client.deleteTorrent(this.clientUrl, this.cookie, torrent.hash, isDeleteFiles));
       }
       logger.info('下载器', this.alias, '删除种子成功:', torrent.name, rule.alias);
-      await this.ntf.deleteTorrent(this._client, torrent, rule, isDeleteFiles);
+      try { await this.ntf.deleteTorrent(this._client, torrent, rule, isDeleteFiles); } catch (error) {
+        logger.error('删除操作已成功，通知失败:', error.message);
+      }
     } catch (error) {
       logger.error('下载器', this.alias, '删除种子失败:', torrent.name, '\n', error);
-      await this.ntf.deleteTorrentError(this._client, torrent, rule);
+      try { await this.ntf.deleteTorrentError(this._client, torrent, rule); } catch (_) {}
+      return;
     }
     return isDeleteFiles;
   };
@@ -444,6 +483,12 @@ class Client {
   }
 
   async autoDelete () {
+    if (this.autoDeleteRunning || this.destroyed) return;
+    this.autoDeleteRunning = true;
+    try { await this._autoDelete(); } finally { this.autoDeleteRunning = false; }
+  }
+
+  async _autoDelete () {
     if (!this.maindata || !this.maindata.torrents || this.maindata.torrents.length === 0) return;
     const torrents = this.maindata.torrents.sort((a, b) =>
       (a.completedTime <= 0 ? moment().unix() : a.completedTime) - (b.completedTime <= 0 ? moment().unix() : b.completedTime) ||
@@ -480,13 +525,17 @@ class Client {
           await this.reannounceTorrent(torrent);
           logger.info(torrent.name, '重新汇报完毕, 等待 2s');
           await util.sleep(2000);
+          if (this.destroyed) return;
           logger.info(torrent.name, '等待 2s 完毕, 执行删种');
+          const deleteFiles = await this.deleteTorrent(torrent, rule);
+          if (deleteFiles === undefined) continue;
+          deletedTorrentHash.push(torrent.hash);
+          if (rule.pause || rule.limitSpeed) continue;
+          if (this.maindata) this.maindata.torrents = this.maindata.torrents.filter(item => item.hash !== torrent.hash);
           await util.runRecord('update torrents set size = ?, tracker = ?, upload = ?, download = ?, delete_time = ?, record_note = ? where hash = ?',
             [torrent.size, torrent.tracker, torrent.uploaded, torrent.downloaded, moment().unix(), `删种规则: ${rule.alias}`, torrent.hash]);
           await util.runRecord('insert into torrent_flow (hash, upload, download, time) values (?, ?, ?, ?)',
             [torrent.hash, torrent.uploaded, torrent.downloaded, moment().unix()]);
-          const deleteFiles = await this.deleteTorrent(torrent, rule);
-          deletedTorrentHash.push(torrent.hash);
           if (!deleteFiles) {
             return;
           }
@@ -615,7 +664,7 @@ class Client {
 
   async setSpeedLimit (hash, type, speed) {
     if (this._client.type === 'qBittorrent') {
-      await this.client.setSpeedLimit(this.clientUrl, this.cookie, hash, type, speed);
+      assertClientResult(await this.client.setSpeedLimit(this.clientUrl, this.cookie, hash, type, speed));
     }
   }
 
@@ -652,7 +701,7 @@ class Client {
 
   async pauseTorrent (hash) {
     if (this._client.type === 'qBittorrent') {
-      await this.client.pauseTorrent(this.clientUrl, this.cookie, hash);
+      assertClientResult(await this.client.pauseTorrent(this.clientUrl, this.cookie, hash));
     }
   }
 

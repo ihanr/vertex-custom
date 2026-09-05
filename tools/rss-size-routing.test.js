@@ -4,7 +4,7 @@ const Module = require('module');
 const originalLoad = Module._load;
 Module._load = function (request, parent, isMain) {
   if (parent && parent.filename.endsWith('app\\common\\Rss.js')) {
-    if (request === '../libs/rss' || request === '../libs/redis') return {};
+    if (request === '../libs/rss' || request === '../libs/redis' || request === '../libs/rss-actions') return {};
     if (request === '../libs/util') return {};
     if (request === '../libs/logger') return { info: () => {}, error: () => {} };
     if (request === 'node-cron') return { schedule: () => ({ stop: () => {} }) };

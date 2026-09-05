@@ -328,7 +328,13 @@ class Rss {
       try {
         await this._waitForReseedTorrent(client, action.hash);
         await this._addReseedTag(client, action.hash, 'Reseed');
-        await this._addReseedTag(client, action.sourceHash, 'Brseed');
+        const source = await client.findTorrent(action.sourceHash);
+        if (source) {
+          await this._addReseedTag(client, action.sourceHash, 'Brseed');
+        } else {
+          note += '；原种已不存在，停止补 Brseed';
+          logger.info(this.alias, '下载器', client.alias, '原种已不存在，停止补 Brseed:', action.sourceHash, '辅种:', action.hash);
+        }
       } catch (error) {
         failed = true;
         action.tagAttempts = (action.tagAttempts || 0) + 1;

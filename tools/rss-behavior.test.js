@@ -63,7 +63,8 @@ const makeClient = (id, overrides = {}) => {
       else client.maindata.torrents.push({ hash, tags: tag });
       return { statusCode: 200 };
     },
-    getMaindata: async () => {}
+    getMaindata: async () => {},
+    findTorrent: async hash => client.maindata.torrents.find(item => item.hash === hash)
   };
   return Object.assign(client, overrides);
 };

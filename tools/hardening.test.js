@@ -187,5 +187,43 @@ async function test(name, fn) {
     assert.equal(source.tags, 'Brseed');
     assert.equal(await actionStore.get('rss', torrent.hash), undefined);
   });
+  for (const mode of ['missing', 'timeout', 'present']) {
+    await test('source Brseed lookup: ' + mode, async () => {
+      const source = { hash: 'b'.repeat(40), tags: '' };
+      const target = { ...torrent, tags: '' };
+      const tags = [];
+      const items = [source, target]; // Deliberately stale cache when source is missing.
+      const client = makeClient({ getMaindata: async () => {}, maindata: { torrents: items }, client: {
+        findTorrent: async (url, cookie, hash) => {
+          if (hash === target.hash) return target;
+          assert.equal(hash, source.hash);
+          if (mode === 'timeout') throw new Error('ETIMEDOUT');
+          return mode === 'missing' ? undefined : source;
+        },
+        addTorrentTag: async (url, cookie, hash, tag) => {
+          tags.push([hash, tag]);
+          items.find(item => item.hash === hash).tags = tag;
+          return { statusCode: 200 };
+        }
+      } });
+      global.runningClient = { qb: client };
+      await actionStore.save('rss', target.hash, { kind: 'reseed', phase: 'accepted', clientId: 'qb',
+        hash: target.hash, sourceHash: source.hash, name: 'example', size: 100, nextTry: 0,
+        tagAttempts: 5, failureRecorded: true });
+      await makeRss()._recoverActions();
+      assert.equal(target.tags, 'Reseed');
+      assert.equal(source.tags, mode === 'present' ? 'Brseed' : '');
+      assert.equal(tags.some(([, tag]) => tag === 'Brseed'), mode === 'present');
+      const pending = await actionStore.get('rss', target.hash);
+      if (mode === 'timeout') {
+        assert.equal(pending.phase, 'accepted');
+        assert.equal(pending.tagAttempts, 6);
+      } else {
+        assert.equal(pending, undefined);
+        assert.ok(records.some(record => record.args.some(value => typeof value === 'string' &&
+          value.includes(mode === 'missing' ? '原种已不存在' : '辅种（原种:'))));
+      }
+    });
+  }
   process.exitCode = failed ? 1 : 0;
 })();

@@ -1,0 +1,58 @@
+name: Test Docker installation
+
+on:
+  push:
+    branches: [main, codex/test-coverage]
+    paths:
+      - Dockerfile
+      - compose.yaml
+      - .dockerignore
+      - docker/**
+      - app/**
+      - webui/**
+      - tools/docker-smoke.test.js
+      - .github/workflows/docker-install.yml
+  pull_request:
+    paths:
+      - Dockerfile
+      - compose.yaml
+      - .dockerignore
+      - docker/**
+      - app/**
+      - webui/**
+      - tools/docker-smoke.test.js
+      - .github/workflows/docker-install.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      VERTEX_DATA_DIR: ${{ runner.temp }}/vertex-install-test
+      VERTEX_REVISION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose and build custom image
+        run: |
+          docker compose -p vertex-install-test config --quiet
+          docker compose -p vertex-install-test build
+      - name: First boot with an empty data directory
+        run: docker compose -p vertex-install-test up -d --wait --wait-timeout 240
+      - name: Verify login, empty defaults and native SQLite
+        run: |
+          docker compose -p vertex-install-test exec -T -e VERTEX_SMOKE_TEST=1 vertex node < tools/docker-smoke.test.js
+          test "$(sha256sum app/common/Rss.js | cut -d ' ' -f 1)" = "$(docker compose -p vertex-install-test exec -T vertex sha256sum /app/vertex/app/common/Rss.js | cut -d ' ' -f 1)"
+      - name: Recreate container and verify data persists
+        run: |
+          docker compose -p vertex-install-test up -d --force-recreate --wait --wait-timeout 240
+          docker compose -p vertex-install-test exec -T -e VERTEX_SMOKE_TEST=1 -e SMOKE_RESTART=1 vertex node < tools/docker-smoke.test.js
+      - name: Show container state on failure
+        if: failure()
+        run: docker compose -p vertex-install-test ps -a
+      - name: Stop test containers
+        if: always()
+        run: docker compose -p vertex-install-test down

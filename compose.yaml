@@ -1,0 +1,30 @@
+services:
+  vertex:
+    image: vertex-custom:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERTEX_REVISION: ${VERTEX_REVISION:-source-build}
+    init: true
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      PORT: "3000"
+    ports:
+      - "${VERTEX_BIND_IP:-127.0.0.1}:${VERTEX_PORT:-3000}:3000"
+    volumes:
+      - type: bind
+        source: ${VERTEX_DATA_DIR:-./vertex}
+        target: /vertex
+    healthcheck:
+      test: ["CMD", "node", "/app/vertex/docker/healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

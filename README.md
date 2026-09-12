@@ -19,6 +19,81 @@ Vertex 目前已处于不新增功能，仅做问题修复的状态。
 
 <figure><img src="https://lswl.in/assets/images/alipay_qrcode.png" alt="" width="375"><figcaption></figcaption></figure>
 
+## Docker Compose 安装（全新服务器）
+
+前提：已安装 Git、Docker Engine 和 Docker Compose V2，能访问 GitHub、Docker Hub 和 npm。
+这是**拉取源码后本机构建**，不是下载已发布的 `ihanr` 成品镜像。使用仓库根目录的 `Dockerfile`，不要使用旧的 `docker/Dockerfile`（上游 CI 模板）。
+
+```bash
+git clone https://github.com/ihanr/vertex-custom.git
+cd vertex-custom
+VERTEX_REVISION="$(git rev-parse HEAD)" docker compose up -d --build
+```
+
+构建会生成本仓库的定制前端并复制定制后端；运行环境、原生依赖和干净初始化模板来自公开的 `lswl/vertex:2026.05.27`。不需要现有 Vertex 容器或私有定制镜像。保留旧运行环境是为了兼容现有依赖，并不代表其所有依赖均已完成安全升级。首次构建需要下载依赖并编译前端，内存不足时可能被系统终止；不要据此反复删除数据重装。
+
+### 访问和首次登录
+
+默认仅监听服务器的 `127.0.0.1:3000`，避免管理界面直接暴露公网。在自己的电脑建立 SSH 隧道，然后浏览器访问 `http://127.0.0.1:3000`：
+
+```bash
+ssh -N -L 3000:127.0.0.1:3000 用户名@服务器地址
+```
+
+默认用户名为 `admin`。首次启动时生成随机密码，在服务器的仓库目录中查看：
+
+```bash
+docker compose exec vertex cat /vertex/data/password
+```
+
+不要把密码输出、运行配置或完整数据库贴到 Issue 或提交到 Git；登录后修改密码。若要经服务器 IP 直接访问，先配置防火墙仅允许自己的 IP，再显式修改监听地址：
+
+```bash
+VERTEX_BIND_IP=0.0.0.0 docker compose up -d
+```
+
+此环境变量只作用于当前命令。长期设置可在仓库目录创建被 Git 忽略的 `.env`，例如：
+
+```dotenv
+VERTEX_BIND_IP=127.0.0.1
+VERTEX_PORT=3000
+VERTEX_DATA_DIR=./vertex
+```
+
+可将 `VERTEX_PORT` 改为其他宿主机端口。默认桥接网络下，容器里的 `127.0.0.1` 不代表宿主机；配置 qB 时请填容器可达的下载器地址。
+
+### 数据、状态和更新
+
+- 默认把 `./vertex` 挂载到 `/vertex`，包含数据库、任务、配置和日志；重建容器不会清空它。
+- `.dockerignore` 使用允许列表排除 Git 历史、运行数据、私钥和本机依赖，构建不会带入你的生产配置。
+- 不要让两个 Vertex 实例同时使用同一数据目录。已用 1Panel 或 `docker run` 安装的旧实例不能直接照搬本节新装命令；应先确认旧挂载目录、停止旧实例、备份并单独迁移。
+- 此流程不发布 Docker Hub/GHCR 镜像，也不修改服务器上独立运行的 qB。
+
+```bash
+docker compose ps
+docker compose logs --tail 50 vertex
+docker compose exec vertex tail -50 /vertex/logs/app-error.log
+```
+
+健康检查通过表示登录页可访问，不代表每个 RSS、qB 或辅种任务都正常。应用详细日志仍位于数据目录的 `logs/` 中。
+
+更新前先用网页备份，或停止服务后备份**实际数据目录**。以下仅针对默认 `./vertex`，备份文件含敏感配置：
+
+```bash
+(
+  set -e
+  umask 077
+  trap 'docker compose start' EXIT
+  docker compose stop
+  tar -czf "../vertex-backup-$(date +%Y%m%d-%H%M%S).tar.gz" vertex
+)
+git pull --ff-only
+VERTEX_REVISION="$(git rev-parse HEAD)" docker compose up -d --build
+docker compose ps
+```
+
+不要删除 `./vertex` 来解决启动失败。仓库的 [Docker 安装测试](https://github.com/ihanr/vertex-custom/actions/workflows/docker-install.yml) 会在独立空目录检查镜像构建、首次登录、原生 SQLite 及重建容器后的数据保留；是否通过以对应提交的 Actions 结果为准。
+
 ## 此定制版的改动
 
 本仓库基于 Vertex 源码，增加了 RSS 的下载器分流和自动辅种界面。

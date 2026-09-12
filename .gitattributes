@@ -1,0 +1,4 @@
+# Shell scripts must also build correctly from Windows checkouts.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yaml text eol=lf

@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      VERTEX_DATA_DIR: ${{ runner.temp }}/vertex-install-test
+      VERTEX_DATA_DIR: ./vertex
       VERTEX_REVISION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4

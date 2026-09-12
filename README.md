@@ -86,10 +86,12 @@ docker compose exec vertex tail -50 /vertex/logs/app-error.log
   trap 'docker compose start' EXIT
   docker compose stop
   tar -czf "../vertex-backup-$(date +%Y%m%d-%H%M%S).tar.gz" vertex
+  docker compose start
+  trap - EXIT
+  git pull --ff-only
+  VERTEX_REVISION="$(git rev-parse HEAD)" docker compose up -d --build
+  docker compose ps
 )
-git pull --ff-only
-VERTEX_REVISION="$(git rev-parse HEAD)" docker compose up -d --build
-docker compose ps
 ```
 
 不要删除 `./vertex` 来解决启动失败。仓库的 [Docker 安装测试](https://github.com/ihanr/vertex-custom/actions/workflows/docker-install.yml) 会在独立空目录检查镜像构建、首次登录、原生 SQLite 及重建容器后的数据保留；是否通过以对应提交的 Actions 结果为准。

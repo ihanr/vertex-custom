@@ -19,12 +19,20 @@ Vertex 目前已处于不新增功能，仅做问题修复的状态。
 
 <figure><img src="https://lswl.in/assets/images/alipay_qrcode.png" alt="" width="375"><figcaption></figcaption></figure>
 
-## Docker Compose 安装（全新服务器）
+## Docker Compose 安装
 
 ```bash
 git clone https://github.com/ihanr/vertex-custom.git
 cd vertex-custom
 VERTEX_REVISION="$(git rev-parse HEAD)" docker compose up -d --build
+```
+
+### 一键更新
+
+仅适用于按上方 Compose 方式安装的实例。在 `vertex-custom` 仓库目录执行，更新前先备份数据；保持原有 `.env` 和数据挂载目录不变。
+
+```bash
+git pull --ff-only && VERTEX_REVISION="$(git rev-parse HEAD)" docker compose up -d --build
 ```
 
 ## 此定制版的改动

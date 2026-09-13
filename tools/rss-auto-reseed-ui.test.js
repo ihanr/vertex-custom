@@ -32,5 +32,14 @@ assert.doesNotMatch(
   /自动辅种会跳过校验添加/,
   'RSS task form should not show the skip-checking warning banner'
 );
+assert.match(
+  rssTaskPage,
+  /v-model:value="rss\.tag"/,
+  'RSS task form should expose a task tag input'
+);
+assert.ok(
+  rssTaskPage.indexOf('label="分类"') < rssTaskPage.indexOf('v-model:value="rss.tag"'),
+  'RSS task tag input should be below the category input'
+);
 
 console.log('PASS RSS auto reseed controls are exposed in the task form');

@@ -32,6 +32,7 @@ class Rss {
     this.cookie = rss.cookie;
     this.savePath = rss.savePath;
     this.category = rss.category;
+    this.tag = String(rss.tag || '').trim();
     this.paused = rss.paused;
     this.autoTMM = rss.autoTMM;
     this.useCustomRegex = rss.useCustomRegex;
@@ -425,7 +426,9 @@ class Rss {
             }
             let action;
             try {
-              action = await this._sendAction(torrent, client, _torrent, () => client.addTorrent(torrent.url, torrent.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category));
+              action = await this._sendAction(torrent, client, _torrent, () => this.tag
+                ? client.addTorrent(torrent.url, torrent.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category, undefined, undefined, this.tag)
+                : client.addTorrent(torrent.url, torrent.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category));
               if (!action) return;
               this.addCount += 1;
             } catch (error) {
@@ -584,19 +587,22 @@ class Rss {
             pending.hash = hash;
             await actions.save(this.id, torrent.hash, pending);
             if (this.destroyed) throw new Error('RSS 已停用');
-            await client.addTorrentByTorrentFile(filepath, hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused);
+            if (this.tag) await client.addTorrentByTorrentFile(filepath, hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused, this.tag);
+            else await client.addTorrentByTorrentFile(filepath, hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused);
           } else {
             if (this.useCustomRegex) {
               const match = this.regexStr.match(/^\/(.*)\/([gimuy]*)$/);
               if (match) {
                 const [, pattern, flags] = match;
                 const regex = new RegExp(pattern, flags);
-                await client.addTorrent(torrent.url.replace(regex, this.replaceStr), torrent.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused);
+                if (this.tag) await client.addTorrent(torrent.url.replace(regex, this.replaceStr), torrent.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused, this.tag);
+                else await client.addTorrent(torrent.url.replace(regex, this.replaceStr), torrent.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused);
               } else {
                 throw new Error('自定义正则格式无效，未发送种子');
               }
             } else {
-              await client.addTorrent(torrent.url, torrent.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused);
+              if (this.tag) await client.addTorrent(torrent.url, torrent.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused, this.tag);
+              else await client.addTorrent(torrent.url, torrent.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused);
             }
           }
         }, category);

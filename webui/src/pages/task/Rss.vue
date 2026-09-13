@@ -233,6 +233,12 @@
           <a-input size="small" v-model:value="rss.category"/>
         </a-form-item>
         <a-form-item
+          label="标签"
+          name="tag"
+          extra="推送种子至 qBittorrent 时附加的标签；可用英文逗号分隔多个标签，请勿填写 Reseed 或 Brseed">
+          <a-input size="small" v-model:value="rss.tag"/>
+        </a-form-item>
+        <a-form-item
           label="每小时上限"
           name="addCountPerHour"
           extra="每小时向客户端推送种子数量上限, 留空为 20, 编辑 Rss 或重启后重置计数">
@@ -472,6 +478,7 @@ export default {
         maxSleepTime: 600,
         skipSameTorrent: true,
         pushTorrentFile: true,
+        tag: '',
         cron: '* * * * *',
         addCountPerHour: '',
         pushNotify: false,

@@ -74,7 +74,7 @@ exports.isVersionGreaterThan = function (version, compareVersion) {
   return false;
 };
 
-exports.addTorrent = async function (clientUrl, cookie, torrentUrl, isSkipChecking, uploadLimit, downloadLimit, savePath, category, autoTMM, firstLastPiecePrio, paused) {
+exports.addTorrent = async function (clientUrl, cookie, torrentUrl, isSkipChecking, uploadLimit, downloadLimit, savePath, category, autoTMM, firstLastPiecePrio, paused, tag) {
   const apiVersion = await exports.getCachedApiVersion(clientUrl, cookie);
   const pausedParam = apiVersion && exports.isVersionGreaterThan(apiVersion, '2.9.3') ? 'stopped' : 'paused';
 
@@ -99,6 +99,9 @@ exports.addTorrent = async function (clientUrl, cookie, torrentUrl, isSkipChecki
   if (category) {
     message.formData.category = category;
   }
+  if (tag) {
+    message.formData.tags = tag;
+  }
   if (autoTMM) {
     message.formData.autoTMM = '' + autoTMM;
   }
@@ -107,7 +110,7 @@ exports.addTorrent = async function (clientUrl, cookie, torrentUrl, isSkipChecki
   return res;
 };
 
-exports.addTorrentByTorrentFile = async function (clientUrl, cookie, filepath, isSkipChecking, uploadLimit, downloadLimit, savePath, category, autoTMM, firstLastPiecePrio, paused) {
+exports.addTorrentByTorrentFile = async function (clientUrl, cookie, filepath, isSkipChecking, uploadLimit, downloadLimit, savePath, category, autoTMM, firstLastPiecePrio, paused, tag) {
   const apiVersion = await exports.getCachedApiVersion(clientUrl, cookie);
   const pausedParam = apiVersion && exports.isVersionGreaterThan(apiVersion, '2.9.3') ? 'stopped' : 'paused';
 
@@ -131,6 +134,9 @@ exports.addTorrentByTorrentFile = async function (clientUrl, cookie, filepath, i
   }
   if (category) {
     message.formData.category = category;
+  }
+  if (tag) {
+    message.formData.tags = tag;
   }
   if (autoTMM) {
     message.formData.autoTMM = '' + autoTMM;

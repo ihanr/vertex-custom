@@ -85,6 +85,7 @@ const makeRss = (overrides = {}) => Object.assign(Object.create(Rss.prototype), 
   uploadLimit: 0,
   downloadLimit: 0,
   category: '',
+  tag: '',
   savePath: '',
   pushTorrentFile: false,
   useCustomRegex: false,
@@ -143,6 +144,22 @@ const test = async (name, fn) => {
 
     assert.deepEqual(calls, [
       ['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', ''],
+      ['reseed', 'tag', torrent.hash, 'Reseed'],
+      ['reseed', 'tag', 'old-hash', 'Brseed']
+    ]);
+  });
+
+  await test('auto reseed keeps the RSS task tag alongside Reseed', async () => {
+    global.runningClient.reseed = makeClient('reseed', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] }
+    });
+    global.runningClient.normal = makeClient('normal');
+    const rss = makeRss({ autoReseed: true, reseedClients: ['reseed'], tag: 'RSS-影视' });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.deepEqual(calls, [
+      ['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', '', undefined, undefined, 'RSS-影视'],
       ['reseed', 'tag', torrent.hash, 'Reseed'],
       ['reseed', 'tag', 'old-hash', 'Brseed']
     ]);
@@ -315,6 +332,17 @@ const test = async (name, fn) => {
       ['reseed', torrent.url, torrent.hash, true, 0, 0, '/data', ''],
       ['reseed', 'tag', torrent.hash, 'Reseed'],
       ['reseed', 'tag', 'old-hash', 'Brseed']
+    ]);
+  });
+
+  await test('normal RSS download passes its task tag to qB', async () => {
+    global.runningClient.normal = makeClient('normal');
+    const rss = makeRss({ tag: 'RSS-影视' });
+
+    await rss._pushTorrent(torrent, global.runningClient.normal);
+
+    assert.deepEqual(calls, [
+      ['normal', torrent.url, torrent.hash, false, 0, 0, '', '', undefined, undefined, 'RSS-影视']
     ]);
   });
 

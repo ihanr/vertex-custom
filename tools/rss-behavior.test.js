@@ -9,6 +9,9 @@ const util = {
   getRecord: async () => undefined,
   runRecord: async () => {},
   sleep: async () => {},
+  calSize: () => 0,
+  listPush: () => [],
+  listRssRule: () => [],
   uuid: { v4: () => 'test-uuid' }
 };
 const logger = { info: () => {}, error: () => {} };
@@ -133,6 +136,19 @@ const test = async (name, fn) => {
 };
 
 (async () => {
+  await test('RSS task strips reserved reseed tags from its user tag list', async () => {
+    const rss = new Rss({
+      id: 'tag-test',
+      alias: 'tag-test',
+      rssUrls: [],
+      clientArr: [],
+      tag: '影视, Reseed, Brseed,自动下载',
+      dryrun: true
+    });
+
+    assert.equal(rss.tag, '影视,自动下载');
+  });
+
   await test('auto reseed adds to the matching completed-data downloader', async () => {
     global.runningClient.reseed = makeClient('reseed', {
       maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] }

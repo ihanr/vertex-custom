@@ -10,6 +10,7 @@ const path = require('path');
 const moment = require('moment');
 const Push = require('./Push');
 const actions = require('../libs/rss-actions');
+const rssTag = require('../libs/rss-tag');
 
 class Rss {
   constructor (rss) {
@@ -32,7 +33,7 @@ class Rss {
     this.cookie = rss.cookie;
     this.savePath = rss.savePath;
     this.category = rss.category;
-    this.tag = String(rss.tag || '').trim();
+    this.tag = rssTag.normalize(rss.tag);
     this.paused = rss.paused;
     this.autoTMM = rss.autoTMM;
     this.useCustomRegex = rss.useCustomRegex;

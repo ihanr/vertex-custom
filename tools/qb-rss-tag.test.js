@@ -23,6 +23,10 @@ Module._load = originalLoad;
   addRequests = requests.filter(request => request.url.endsWith('/api/v2/torrents/add'));
   assert.equal(addRequests[1].formData.tags, 'RSS-影视', 'torrent-file RSS add must send the task tag to qB');
 
+  await qb.addTorrent('http://qb.example', 'SID=test', 'https://tracker.example/untagged', false, 0, 0, '', '', false, false, false);
+  addRequests = requests.filter(request => request.url.endsWith('/api/v2/torrents/add'));
+  assert.equal(Object.hasOwn(addRequests[2].formData, 'tags'), false, 'empty task tag must not send qB a tags field');
+
   console.log('PASS qB RSS task tags are sent for URL and torrent-file adds');
 })().catch(error => {
   console.error(error);

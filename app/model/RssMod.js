@@ -1,12 +1,14 @@
 const fs = require('fs');
 const path = require('path');
 const Rss = require('../common/Rss');
+const rssTag = require('../libs/rss-tag');
 
 const util = require('../libs/util');
 class RssMod {
   add (options) {
     const id = util.uuid.v4().split('-')[0];
     const rssSet = { ...options };
+    rssSet.tag = rssTag.normalize(rssSet.tag);
     rssSet.id = id;
     fs.writeFileSync(path.join(__dirname, '../data/rss/', id + '.json'), JSON.stringify(rssSet, null, 2));
     if (global.runningRss[id]) global.runningRss[id].destroy();
@@ -27,6 +29,7 @@ class RssMod {
 
   modify (options) {
     const rssSet = { ...options };
+    rssSet.tag = rssTag.normalize(rssSet.tag);
     rssSet.sameServerClients = rssSet.sameServerClients || [];
     rssSet.reseedClients = rssSet.reseedClients || [];
     fs.writeFileSync(path.join(__dirname, '../data/rss/', options.id + '.json'), JSON.stringify(rssSet, null, 2));
@@ -44,6 +47,7 @@ class RssMod {
       }
       rss.acceptRules = rss.acceptRules || [];
       rss.rejectRules = rss.rejectRules || [];
+      rss.tag = rssTag.normalize(rss.tag);
     }
     return rssList;
   };

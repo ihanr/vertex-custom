@@ -74,6 +74,11 @@ const clientProxy = function (req, res, next) {
   proxy(client.clientUrl, {
     proxyReqOptDecorator (proxyReqOpts, srcReq) {
       proxyReqOpts.headers.cookie = global.runningClient[clientId] ? global.runningClient[clientId].cookie || '' : '';
+      if (client.type === 'qBittorrent') {
+        const origin = new URL(client.clientUrl).origin;
+        if (proxyReqOpts.headers.referer) proxyReqOpts.headers.referer = origin + '/';
+        if (proxyReqOpts.headers.origin) proxyReqOpts.headers.origin = origin;
+      }
       if (proxyReqOpts.headers['content-type'] && proxyReqOpts.headers['content-type'].indexOf('application/x-www-form-urlencoded') !== -1) {
         proxyReqOpts.headers['content-type'] = 'application/x-www-form-urlencoded';
       }

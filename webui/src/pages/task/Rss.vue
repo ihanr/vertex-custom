@@ -284,6 +284,16 @@
         </a-form-item>
         <a-form-item
           v-if="rss.autoReseed"
+          label="辅种范围"
+          name="reseedByRule">
+          <a-checkbox v-model:checked="rss.reseedByRule">按选种规则限制辅种下载器</a-checkbox>
+          <template #extra>
+            仅检查已勾选的辅种下载器与匹配选种规则下载器组的交集<br/>
+            关闭时检查全部已勾选的辅种下载器
+          </template>
+        </a-form-item>
+        <a-form-item
+          v-if="rss.autoReseed"
           label="辅种下载器"
           name="reseedClients"
           extra="从这些下载器中查找已完成的同名同大小种子"
@@ -475,6 +485,7 @@ export default {
         scrapeHr: false,
         autoReseed: false,
         onlyReseed: false,
+        reseedByRule: false,
         maxSleepTime: 600,
         skipSameTorrent: true,
         pushTorrentFile: true,

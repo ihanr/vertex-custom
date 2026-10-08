@@ -647,6 +647,80 @@ const test = async (name, fn) => {
 
     assert.deepEqual(calls, []);
   });
+
+  for (const scenario of [
+    { name: 'disabled preserves the full reseed list', enabled: false, rules: [{ clientArr: ['inside'] }], want: 'outside' },
+    { name: 'enabled restricts reseeding to the intersection', enabled: true, rules: [{ clientArr: ['inside'] }], want: 'inside' },
+    { name: 'an empty intersection never falls back to another downloader', enabled: true, rules: [{ clientArr: ['unselected'] }], want: undefined },
+    { name: 'a matching rule without downloaders preserves the reseed list', enabled: true, rules: [{}], want: 'outside' },
+    { name: 'no accept rules preserves the reseed list', enabled: true, rules: [], want: 'outside' },
+    { name: 'no matching accept rule skips reseeding', enabled: true, rules: [{ code: '() => false', clientArr: ['inside'] }], want: undefined },
+    { name: 'legacy single-downloader rules restrict reseeding', enabled: true, rules: [{ client: 'inside' }], want: 'inside' },
+    { name: 'only the first matching rule determines reseed scope', enabled: true, rules: [{ clientArr: ['inside'] }, { clientArr: ['outside'] }], want: 'inside' }
+  ]) {
+    await test('rule-scoped reseed: ' + scenario.name, async () => {
+      for (const id of ['outside', 'inside', 'unselected']) {
+        global.runningClient[id] = makeClient(id, {
+          maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-' + id, savePath: '/data' }] }
+        });
+      }
+      const rss = makeRss({
+        autoReseed: true,
+        onlyReseed: true,
+        reseedByRule: scenario.enabled,
+        reseedClients: ['outside', 'inside'],
+        acceptRules: scenario.rules.map(rule => ({ type: 'javascript', code: '() => true', ...rule }))
+      });
+
+      await rss.rss([torrent]);
+
+      const adds = calls.filter(call => call[1] === torrent.url);
+      assert.deepEqual(adds.map(call => call[0]), scenario.want ? [scenario.want] : []);
+      if (scenario.want) assert.equal(adds[0][3], true, 'must remain a reseed add');
+    });
+  }
+
+  await test('rule-scoped reseed does not retry on a downloader outside the current intersection', async () => {
+    global.runningClient.outside = makeClient('outside', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] }
+    });
+    const rss = makeRss({ autoReseed: true, onlyReseed: true, reseedByRule: true, reseedClients: ['outside'] });
+
+    await rss._pushTorrent(torrent, undefined, { clientArr: ['inside'] }, { kind: 'reseed', clientId: 'outside' });
+
+    assert.deepEqual(calls, []);
+  });
+
+  await test('rule-scoped reseed falls back to normal download in the matching group when only-reseed is off', async () => {
+    global.runningClient.outside = makeClient('outside', {
+      maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old-hash', savePath: '/data' }] }
+    });
+    global.runningClient.inside = makeClient('inside');
+    const rss = makeRss({
+      autoReseed: true, onlyReseed: false, reseedByRule: true, reseedClients: ['outside', 'inside'],
+      acceptRules: [{ type: 'javascript', code: '() => true', clientArr: ['inside'] }]
+    });
+
+    await rss.rss([torrent]);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], 'inside');
+    assert.equal(calls[0][3], false);
+  });
+
+  await test('the reseed scope setting does not affect normal downloads when auto-reseed is off', async () => {
+    global.runningClient.inside = makeClient('inside');
+    const rss = makeRss({
+      autoReseed: false, reseedByRule: true, reseedClients: [],
+      acceptRules: [{ type: 'javascript', code: '() => true', clientArr: ['inside'] }]
+    });
+
+    await rss.rss([torrent]);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], 'inside');
+    assert.equal(calls[0][3], false);
+  });
 })().catch(error => {
   console.error(error);
   process.exitCode = 1;

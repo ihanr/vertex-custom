@@ -25,6 +25,7 @@ class Rss {
     this.autoReseed = rss.autoReseed;
     this.onlyReseed = !!rss.autoReseed && !!rss.onlyReseed;
     this.reseedClients = rss.reseedClients;
+    this.reseedByRule = !!rss.reseedByRule;
     this.pushMessage = rss.pushMessage;
     this.skipSameTorrent = rss.skipSameTorrent;
     this.scrapeFree = rss.scrapeFree;
@@ -234,6 +235,17 @@ class Rss {
     return this.clientArr;
   }
 
+  _getReseedClientIds (fitRule) {
+    const clients = this.reseedClients || [];
+    if (!this.reseedByRule) return clients;
+    if (!fitRule && this.acceptRules.length) return [];
+    const rule = fitRule || {};
+    const group = Array.isArray(rule.clientArr) && rule.clientArr.length
+      ? rule.clientArr
+      : rule.client ? [rule.client] : [];
+    return group.length ? clients.filter(id => group.includes(id)) : clients;
+  }
+
   _selectClient (clientIds) {
     const availableClients = clientIds
       .map(item => global.runningClient[item])
@@ -400,7 +412,8 @@ class Rss {
     if (this.autoReseed && retryAction?.kind !== 'normal' && torrent.hash.indexOf('fakehash') === -1) {
       let bencodeInfo;
       let bencodeLookupFailed = false;
-      for (const key of retryAction ? [retryAction.clientId] : this.reseedClients || []) {
+      const reseedClients = this._getReseedClientIds(fitRule);
+      for (const key of retryAction ? reseedClients.filter(id => id === retryAction.clientId) : reseedClients) {
         const client = global.runningClient[key];
         if (!client || !client.maindata || !Array.isArray(client.maindata.torrents)) {
           logger.error('Rss', this.alias, '下载器', key, '不可用');
@@ -678,7 +691,7 @@ class Rss {
         let firstClient = this._selectClient(this._getClientIds(fitRule));
         if (pending) {
           const allowed = pending.kind === 'reseed'
-            ? this.autoReseed && (this.reseedClients || []).includes(pending.clientId)
+            ? this.autoReseed && this._getReseedClientIds(fitRule).includes(pending.clientId)
             : !(this.autoReseed && this.onlyReseed) && this._getClientIds(fitRule).includes(pending.clientId);
           if (!allowed) continue;
           firstClient = global.runningClient[pending.clientId];

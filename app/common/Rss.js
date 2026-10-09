@@ -318,6 +318,7 @@ class Rss {
         return;
       }
       action.skyPubTime = torrent.pubTime;
+      action.registrationConfirmed = false;
       await actions.save(this.id, torrent.hash, action);
     } catch (error) {
       delete action.skyPubTime;
@@ -325,8 +326,10 @@ class Rss {
     }
   }
 
-  async _addSkyPubTimeTag (action, client) {
+  async _addSkyPubTimeTag (action, client, rssHash) {
     const torrent = await this._waitForReseedTorrent(client, action.hash);
+    action.registrationConfirmed = true;
+    await actions.save(this.id, rssHash, action);
     if (torrent.category !== 'SKY') {
       logger.info(this.alias, 'SKY 发种时间标签跳过：qB 实际分类不是 SKY', action.hash);
       return;
@@ -384,6 +387,10 @@ class Rss {
       note = `辅种（原种: ${action.sourceHash}；下载器: ${client.alias}）`;
       try {
         await this._waitForReseedTorrent(client, action.hash);
+        if (action.skyPubTime) {
+          action.registrationConfirmed = true;
+          await actions.save(this.id, rssHash, action);
+        }
         await this._addReseedTag(client, action.hash, 'Reseed');
         const source = await client.findTorrent(action.sourceHash);
         if (source) {
@@ -398,7 +405,7 @@ class Rss {
     }
     if (action.skyPubTime && !action.skyPubTimeDone) {
       try {
-        await this._addSkyPubTimeTag(action, client);
+        await this._addSkyPubTimeTag(action, client, rssHash);
         action.skyPubTimeDone = true;
       } catch (error) { tagError = tagError || error; }
     }
@@ -441,9 +448,20 @@ class Rss {
           const found = await client.findTorrent(action.hash);
           if (this.destroyed) return;
           if (found) {
+            if (action.skyPubTime) action.registrationConfirmed = true;
             await this._completeAction(hash, action, client);
           } else if (action.phase === 'adding') {
             action.phase = action.attempts >= 5 ? 'stopped' : 'retry';
+            await actions.save(this.id, hash, action);
+          } else if (action.skyPubTime && action.registrationConfirmed === false) {
+            action.registrationChecks = (action.registrationChecks || 0) + 1;
+            if (action.registrationChecks >= 24) {
+              action.phase = 'stopped';
+              logger.error(this.alias, 'SKY 新种登记等待已达上限，停止补标:', action.hash);
+            } else {
+              action.nextTry = moment().unix() + Math.min(3600, 60 * 2 ** Math.min(action.registrationChecks, 6));
+              logger.info(this.alias, 'SKY 新种尚未登记，继续等待，不重发:', action.hash);
+            }
             await actions.save(this.id, hash, action);
           } else {
             action.phase = 'stopped';

@@ -146,6 +146,54 @@ const test = async (name, fn) => {
     await journal.set(feedHash, { clientId: 'qb', hash: actualHash, kind: 'normal', phase: 'accepted', nextTry: 0, category: 'SKY', name: 'resource', size: 100 });
     await s.task._recoverActions(); assert.deepEqual(s.writes, []);
   });
+  for (const reseed of [false, true]) {
+    await test('late qB registration keeps waiting across RSS restart without re-adding: ' + (reseed ? 'reseed' : 'normal'), async () => {
+      const s = setup({ delay: true, reseed }); s.client.getMaindata = async () => {};
+      await s.task._pushTorrent(s.torrent, s.client);
+      assert.equal(journal.get(feedHash).phase, 'accepted');
+      s.recover(); await s.task._recoverActions();
+      const waiting = journal.get(feedHash);
+      assert.equal(waiting.phase, 'accepted');
+      assert.equal(waiting.registrationConfirmed, false);
+      assert.ok(waiting.nextTry > now);
+      s.items.push({ hash: actualHash, category: 'SKY', tags: 'Reseed, keep' });
+      now += 4000;
+      const restarted = Object.assign(Object.create(Rss.prototype), s.task);
+      await restarted._recoverActions();
+      assert.equal(s.sends.length, 1);
+      assert.ok(s.items.find(t => t.hash === actualHash).tags.includes(pubTag));
+      assert.equal(journal.size, 0);
+    });
+  }
+  await test('an observed qB torrent later deleted stops publication recovery', async () => {
+    const s = setup({ failTag: true }); await s.task._pushTorrent(s.torrent, s.client);
+    assert.equal(journal.get(feedHash).registrationConfirmed, true);
+    s.items.splice(0, s.items.length); s.recover(); await s.task._recoverActions();
+    assert.equal(journal.get(feedHash).phase, 'stopped');
+    assert.equal(s.sends.length, 1);
+  });
+  await test('unregistered SKY torrents stop after 24 absence checks without re-adding', async () => {
+    const s = setup({ delay: true }); s.client.getMaindata = async () => {};
+    await s.task._pushTorrent(s.torrent, s.client);
+    for (let check = 1; check <= 24; check++) {
+      now += 4000;
+      await s.task._recoverActions();
+      assert.equal(journal.get(feedHash).phase, check < 24 ? 'accepted' : 'stopped');
+    }
+    assert.equal(journal.get(feedHash).registrationChecks, 24);
+    assert.equal(s.sends.length, 1);
+    s.items.push({ hash: actualHash, category: 'SKY', tags: '' }); now += 4000;
+    await s.task._recoverActions();
+    assert.equal(s.writes.length, 0, 'stopped tasks must not restart themselves');
+  });
+  await test('legacy accepted actions without an explicit registration flag retain the stop behavior', async () => {
+    const s = setup();
+    journal.set(feedHash, { clientId: 'qb', hash: actualHash, kind: 'normal', phase: 'accepted', nextTry: 0,
+      category: 'SKY', skyPubTime: 6000, name: 'resource', size: 100 });
+    await s.task._recoverActions();
+    assert.equal(journal.get(feedHash).phase, 'stopped');
+    assert.equal(s.sends.length, 0);
+  });
   const scriptFile = path.join(__dirname, 'sky-pubtime-limit.vertex.js');
   for (const scenario of [
     { name: 'publication age wins over qB added time', tags: 'SKYPubTime-7000', addedTime: 9999, want: 1 },

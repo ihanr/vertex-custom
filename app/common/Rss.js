@@ -293,10 +293,52 @@ class Rss {
     for (let attempt = 1; attempt <= 10; attempt++) {
       await client.getMaindata(true);
       const torrent = ((client.maindata && client.maindata.torrents) || []).find(item => item.hash === hash);
-      if (torrent) return;
+      if (torrent) return torrent;
       if (attempt < 10) await util.sleep(1000);
     }
     throw new Error('qB 在 10 秒内未登记辅种种子');
+  }
+
+  async _prepareSkyPubTime (torrent, action, client, knownHash) {
+    if (action.category !== 'SKY' || client._client?.type !== 'qBittorrent') return;
+    if (knownHash && /^[a-f0-9]{40}$/i.test(knownHash)) action.hash = knownHash.toLowerCase();
+    if (!Number.isSafeInteger(torrent.pubTime) || torrent.pubTime <= 0 || torrent.pubTime > moment().unix()) {
+      logger.info(this.alias, 'SKY 发种时间标签跳过：RSS 发种时间缺失、无效或来自未来', torrent.name);
+      return;
+    }
+    try {
+      // URL adds need the file's actual infohash; never identify a new torrent by its name.
+      const hash = knownHash || (await this._downloadTorrent(torrent.url)).hash;
+      if (!/^[a-f0-9]{40}$/i.test(hash)) throw new Error('无法确认实际 infohash');
+      action.hash = hash.toLowerCase();
+      const existing = await client.findTorrent(action.hash);
+      if (this.destroyed) return;
+      if (existing) {
+        logger.info(this.alias, 'SKY 发种时间标签跳过：目标 qB 已有该种子', action.hash);
+        return;
+      }
+      action.skyPubTime = torrent.pubTime;
+      await actions.save(this.id, torrent.hash, action);
+    } catch (error) {
+      delete action.skyPubTime;
+      logger.error(this.alias, 'SKY 发种时间标签跳过：无法安全确认新种', torrent.name, error.message);
+    }
+  }
+
+  async _addSkyPubTimeTag (action, client) {
+    const torrent = await this._waitForReseedTorrent(client, action.hash);
+    if (torrent.category !== 'SKY') {
+      logger.info(this.alias, 'SKY 发种时间标签跳过：qB 实际分类不是 SKY', action.hash);
+      return;
+    }
+    const tag = `SKYPubTime-${action.skyPubTime}`;
+    const tags = String(torrent.tags || '').split(',').map(value => value.trim());
+    if (tags.some(value => value.startsWith('SKYPubTime-') && value !== tag)) {
+      logger.info(this.alias, 'SKY 发种时间标签跳过：已存在不同的时间标签', action.hash);
+      return;
+    }
+    if (!tags.includes(tag)) await this._addReseedTag(client, action.hash, tag);
+    logger.info(this.alias, 'SKY 发种时间标签已确认', action.hash, tag);
   }
 
   async _sendAction (torrent, client, source, send, category = this.category) {
@@ -337,6 +379,7 @@ class Rss {
     await actions.save(this.id, rssHash, action);
     let note = '添加种子';
     let failed = false;
+    let tagError;
     if (action.kind === 'reseed') {
       note = `辅种（原种: ${action.sourceHash}；下载器: ${client.alias}）`;
       try {
@@ -350,14 +393,23 @@ class Rss {
           logger.info(this.alias, '下载器', client.alias, '原种已不存在，停止补 Brseed:', action.sourceHash, '辅种:', action.hash);
         }
       } catch (error) {
-        failed = true;
-        action.tagAttempts = (action.tagAttempts || 0) + 1;
-        action.nextTry = moment().unix() + Math.min(3600, 60 * 2 ** Math.min(action.tagAttempts, 6));
-        if (action.tagAttempts >= 24) action.phase = 'stopped';
-        note += action.phase === 'stopped' ? '；标签失败，补标重试已达上限' : '；标签失败，等待补标';
-        logger.error(this.alias, '下载器', client.alias, '辅种标签待处理:', action.hash, error.message);
-        await actions.save(this.id, rssHash, action);
+        tagError = error;
       }
+    }
+    if (action.skyPubTime && !action.skyPubTimeDone) {
+      try {
+        await this._addSkyPubTimeTag(action, client);
+        action.skyPubTimeDone = true;
+      } catch (error) { tagError = tagError || error; }
+    }
+    if (tagError) {
+      failed = true;
+      action.tagAttempts = (action.tagAttempts || 0) + 1;
+      action.nextTry = moment().unix() + Math.min(3600, 60 * 2 ** Math.min(action.tagAttempts, 6));
+      if (action.tagAttempts >= 24) action.phase = 'stopped';
+      note += action.phase === 'stopped' ? '；标签失败，补标重试已达上限' : '；标签失败，等待补标';
+      logger.error(this.alias, '下载器', client.alias, action.kind === 'reseed' ? '辅种标签待处理:' : 'SKY 发种时间标签待处理:', action.hash, tagError.message);
+      await actions.save(this.id, rssHash, action);
     }
     if (!failed || !action.failureRecorded) {
       for (const hash of new Set([rssHash, action.hash])) {
@@ -440,9 +492,12 @@ class Rss {
             }
             let action;
             try {
-              action = await this._sendAction(torrent, client, _torrent, () => this.tag
-                ? client.addTorrent(torrent.url, torrent.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category, undefined, undefined, this.tag)
-                : client.addTorrent(torrent.url, torrent.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category));
+              action = await this._sendAction(torrent, client, _torrent, async pending => {
+                await this._prepareSkyPubTime(torrent, pending, client, bencodeInfo.hash);
+                if (this.destroyed) throw new Error('RSS 已停用');
+                if (this.tag) await client.addTorrent(torrent.url, pending.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category, undefined, undefined, this.tag);
+                else await client.addTorrent(torrent.url, pending.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category);
+              });
               if (!action) return;
               this.addCount += 1;
             } catch (error) {
@@ -600,24 +655,26 @@ class Rss {
             if (this.destroyed) throw new Error('RSS 已停用');
             pending.hash = hash;
             await actions.save(this.id, torrent.hash, pending);
+            await this._prepareSkyPubTime(torrent, pending, client, hash);
             if (this.destroyed) throw new Error('RSS 已停用');
-            if (this.tag) await client.addTorrentByTorrentFile(filepath, hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused, this.tag);
-            else await client.addTorrentByTorrentFile(filepath, hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused);
+            if (this.tag) await client.addTorrentByTorrentFile(filepath, pending.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused, this.tag);
+            else await client.addTorrentByTorrentFile(filepath, pending.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused);
           } else {
+            let torrentUrl = torrent.url;
             if (this.useCustomRegex) {
               const match = this.regexStr.match(/^\/(.*)\/([gimuy]*)$/);
               if (match) {
                 const [, pattern, flags] = match;
                 const regex = new RegExp(pattern, flags);
-                if (this.tag) await client.addTorrent(torrent.url.replace(regex, this.replaceStr), torrent.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused, this.tag);
-                else await client.addTorrent(torrent.url.replace(regex, this.replaceStr), torrent.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused);
+                torrentUrl = torrent.url.replace(regex, this.replaceStr);
               } else {
                 throw new Error('自定义正则格式无效，未发送种子');
               }
-            } else {
-              if (this.tag) await client.addTorrent(torrent.url, torrent.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused, this.tag);
-              else await client.addTorrent(torrent.url, torrent.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused);
             }
+            await this._prepareSkyPubTime({ ...torrent, url: torrentUrl }, pending, client);
+            if (this.destroyed) throw new Error('RSS 已停用');
+            if (this.tag) await client.addTorrent(torrentUrl, pending.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused, this.tag);
+            else await client.addTorrent(torrentUrl, pending.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused);
           }
         }, category);
         if (!action) return;

@@ -501,17 +501,21 @@ class Rss {
               logger.error(this.alias, '获取辅种种子信息失败', torrent.name, error);
             }
           }
-          if (!bencodeInfo) continue;
+          if (!bencodeInfo || !bencodeInfo.hash) continue;
           if (this.destroyed) return;
-          if (_torrent.name === bencodeInfo.name && _torrent.hash !== bencodeInfo.hash) {
-            if (client.maindata.torrents.some(item => item.hash === torrent.hash)) {
+          const actualHash = bencodeInfo.hash.toLowerCase();
+          if (_torrent.name === bencodeInfo.name && _torrent.hash.toLowerCase() !== actualHash) {
+            if (client.maindata.torrents.some(item => item.hash.toLowerCase() === actualHash)) {
               logger.info(this.alias, '下载器', client.alias, '辅种新种已存在，跳过:', torrent.name);
               return;
             }
             let action;
             try {
               action = await this._sendAction(torrent, client, _torrent, async pending => {
-                await this._prepareSkyPubTime(torrent, pending, client, bencodeInfo.hash);
+                // Keep the feed hash as the journal key, but use the file's hash for qB and recovery.
+                pending.hash = actualHash;
+                await actions.save(this.id, torrent.hash, pending);
+                await this._prepareSkyPubTime(torrent, pending, client, actualHash);
                 if (this.destroyed) throw new Error('RSS 已停用');
                 if (this.tag) await client.addTorrent(torrent.url, pending.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category, undefined, undefined, this.tag);
                 else await client.addTorrent(torrent.url, pending.hash, true, this.uploadLimit, this.downloadLimit, _torrent.savePath, this.category);
@@ -744,7 +748,8 @@ class Rss {
         await this.ntf.rejectTorrent(this._rss, undefined, torrent, `拒绝原因: 达到单小时推送上限: ${this.addCount} / ${this.addCountPerHour}`);
         return;
       }
-      if (moment().unix() - this.lastRssTime > +this.maxSleepTime) {
+      // No previous poll exists on startup or after editing this RSS task.
+      if (this.lastRssTime > 0 && moment().unix() - this.lastRssTime > +this.maxSleepTime) {
         await util.runRecord('INSERT INTO torrents (hash, name, size, rss_id, link, record_time, record_type, record_note) values (?, ?, ?, ?, ?, ?, ?, ?)',
           [torrent.hash, torrent.name, torrent.size, this.id, torrent.link, moment().unix(), 2, '拒绝原因: 最长休眠时间']);
         await this.ntf.rejectTorrent(this._rss, undefined, torrent, '拒绝原因: 最长休眠时间');

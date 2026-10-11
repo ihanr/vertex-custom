@@ -58,14 +58,27 @@ const DEFAULT_HIDDEN_MENU = [
   '/setting/interaction'
 ];
 
+const initTask = function (type, id, initialize) {
+  try {
+    initialize();
+  } catch (e) {
+    // Do not log task settings or error messages: they may contain credentials.
+    logger.error(`${type} 任务 [${id}] 初始化失败，已跳过；请检查任务配置（包括 Cron）`, e instanceof Error ? e.name : 'Error');
+  }
+};
+
 const initPush = function () {
   const webhookPush = util.listPush().filter(item => item.id === global.webhookPushTo)[0];
   if (webhookPush) {
-    global.webhookPush = new Push({ ...webhookPush, push: true });
+    initTask('Webhook Push', webhookPush.id, () => {
+      global.webhookPush = new Push({ ...webhookPush, push: true });
+    });
   }
   const doubanPush = util.listPush().filter(item => item.id === global.doubanPush)[0];
   if (doubanPush) {
-    global.doubanPush = new Push({ ...doubanPush, push: true });
+    initTask('Douban Push', doubanPush.id, () => {
+      global.doubanPush = new Push({ ...doubanPush, push: true });
+    });
   }
 };
 
@@ -145,42 +158,58 @@ const init = function () {
   initPush();
   for (const client of util.listClient()) {
     if (client.enable) {
-      global.runningClient[client.id] = new Client(client);
+      initTask('Client', client.id, () => {
+        global.runningClient[client.id] = new Client(client);
+      });
     }
   }
   for (const rss of util.listRss()) {
     if (rss.enable) {
-      global.runningRss[rss.id] = new Rss(rss);
+      initTask('RSS', rss.id, () => {
+        global.runningRss[rss.id] = new Rss(rss);
+      });
     }
   }
   for (const server of util.listServer()) {
     if (server.enable) {
-      global.runningServer[server.id] = new Server(server);
+      initTask('Server', server.id, () => {
+        global.runningServer[server.id] = new Server(server);
+      });
     }
   }
   for (const site of util.listSite()) {
     if (site.enable) {
-      global.runningSite[site.name] = new Site(site);
+      initTask('Site', site.name, () => {
+        global.runningSite[site.name] = new Site(site);
+      });
     }
   }
   for (const douban of util.listDouban()) {
     if (douban.enable) {
-      global.runningDouban[douban.id] = new Douban(douban);
+      initTask('Douban', douban.id, () => {
+        global.runningDouban[douban.id] = new Douban(douban);
+      });
     }
   }
   for (const script of util.listCrontabJavaScript()) {
     if (script.enable) {
-      global.runningScript[script.id] = new Script(script);
+      initTask('Script', script.id, () => {
+        global.runningScript[script.id] = new Script(script);
+      });
     }
   }
   for (const watch of util.listWatch()) {
     if (watch.enable) {
-      global.runningWatch[watch.id] = new Watch(watch);
+      initTask('Watch', watch.id, () => {
+        global.runningWatch[watch.id] = new Watch(watch);
+      });
     }
   }
   for (const irc of util.listIRC()) {
     if (irc.enable) {
-      global.runningIRC[irc.id] = new IRC(irc);
+      initTask('IRC', irc.id, () => {
+        global.runningIRC[irc.id] = new IRC(irc);
+      });
     }
   }
   // cookiecloud

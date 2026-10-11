@@ -42,6 +42,7 @@ const Client = require('../app/common/Client');
 Module._load = originalLoad;
 
 const makeClient = (overrides = {}) => Object.assign(Object.create(Client.prototype), {
+  id: 'test-client',
   alias: 'test-client',
   _client: { type: 'qBittorrent' },
   clientUrl: 'http://qb.example',
@@ -136,9 +137,46 @@ const test = async (name, fn) => {
     assert.equal(client.reseedTorrentIndex.get(100)[0].hash, 'done');
   });
 
+  await test('keeps tracker statuses from other downloaders out of deletion rules', async () => {
+    util.getRecord = async () => ({ id: 1 });
+    const torrent = { hash: 'same-hash', name: 'torrent', tracker: 'tracker.example', size: 100, completed: 100, state: 'uploading' };
+    const first = makeClient({
+      id: 'first',
+      maindata: { torrents: [{ ...torrent }] },
+      client: {
+        getTrackerList: async () => ({ statusCode: 200, body: JSON.stringify([{ url: 'https://tracker.example/announce', msg: 'Unregistered torrent' }]) })
+      }
+    });
+    const second = makeClient({
+      id: 'second',
+      maindata: { torrents: [{ ...torrent }] },
+      client: {
+        getTrackerList: async () => ({ statusCode: 200, body: JSON.stringify([{ url: 'https://tracker.example/announce', msg: '' }]) }),
+        getMaindata: async () => ({ torrents: [{ ...torrent }], uploadSpeed: 0, downloadSpeed: 0 })
+      }
+    });
+
+    await first.trackerSync();
+    await second.trackerSync();
+    await second.getMaindata();
+
+    assert.equal(first.trackerStatus['same-hash'], 'Unregistered torrent');
+    assert.equal(second.maindata.torrents[0].trackerStatus, '');
+    assert.equal(second._fitDeleteRule({
+      type: 'normal',
+      conditions: [{ key: 'trackerStatus', compareType: 'contain', value: 'Unregistered' }]
+    }, second.maindata.torrents[0]), false);
+
+    redisStore.clear();
+    redisStore.set('vertex:torrent_tracker_status:same-hash', JSON.stringify('Unregistered torrent'));
+    second.trackerStatus = {};
+    await second.trackerSync();
+    assert.equal(second.trackerStatus['same-hash'], '', 'legacy unscoped status must not be reused');
+  });
+
   await test('uses cached tracker status without another qB tracker request', async () => {
     let requests = 0;
-    redisStore.set('vertex:torrent_tracker_status:hash-1', JSON.stringify('cached tracker status'));
+    redisStore.set('vertex:torrent_tracker_status:test-client:hash-1', JSON.stringify('cached tracker status'));
     const client = makeClient({
       maindata: { torrents: [{ hash: 'hash-1', name: 'torrent', tracker: 'tracker.example' }] },
       client: { getTrackerList: async () => { requests += 1; return { statusCode: 200, body: '[]' }; } }
@@ -148,6 +186,36 @@ const test = async (name, fn) => {
 
     assert.equal(requests, 0);
     assert.equal(client.trackerStatus['hash-1'], 'cached tracker status');
+  });
+
+  await test('keeps tracker skip markers local to the downloader that created them', async () => {
+    const torrent = { hash: 'same-hash', name: 'torrent', tracker: 'tracker.example' };
+    let requests = 0;
+    const first = makeClient({
+      id: 'first',
+      maindata: { torrents: [torrent] },
+      client: { getTrackerList: async () => { requests += 1; return { statusCode: 200, body: '[]' }; } }
+    });
+    const second = makeClient({
+      id: 'second',
+      maindata: { torrents: [torrent] },
+      client: {
+        getTrackerList: async () => ({ statusCode: 200, body: JSON.stringify([{ url: 'https://tracker.example/announce', msg: 'Working' }]) })
+      }
+    });
+
+    await first.trackerSync();
+    util.getRecord = async () => ({ id: 1 });
+    await first.trackerSync();
+    assert.equal(requests, 0, 'a downloader must retain its own skip marker');
+    await second.trackerSync();
+    assert.equal(second.trackerStatus['same-hash'], 'Working');
+
+    redisStore.clear();
+    redisStore.set('vertex:torrent_tracker:same-hash', 1);
+    second.trackerStatus = {};
+    await second.trackerSync();
+    assert.equal(second.trackerStatus['same-hash'], 'Working', 'legacy unscoped skip marker must not be reused');
   });
 
   await test('limits tracker status requests to four concurrent qB calls', async () => {

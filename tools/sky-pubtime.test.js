@@ -72,6 +72,73 @@ const test = async (name, fn) => {
   try { await fn(); console.log('PASS ' + name); } catch (error) { failed++; console.error('FAIL ' + name, error); }
 };
 (async () => {
+  await test('non-SKY reseed persists the normalized actual hash before sending and labels that torrent', async () => {
+    const s = setup({ reseed: true, category: 'OTHER', actualCategory: 'OTHER' });
+    rssApi.getTorrentNameByBencode = async () => ({ name: 'resource', hash: actualHash.toUpperCase() });
+    const send = s.client.addTorrent;
+    let savedBeforeSend;
+    s.client.addTorrent = async (...args) => {
+      savedBeforeSend = journal.get(feedHash);
+      const result = await send(...args);
+      s.items.find(t => t.hash === actualHash).tags = 'keep';
+      return result;
+    };
+    await s.task._pushTorrent(s.torrent, s.client);
+
+    assert.equal(s.sends.length, 1);
+    assert.equal(savedBeforeSend.hash, actualHash);
+    assert.equal(s.sends[0][1], actualHash);
+    assert.deepEqual(s.writes, [[actualHash, 'Reseed'], [sourceHash, 'Brseed']]);
+    assert.equal(s.items.find(t => t.hash === actualHash).tags, 'keep, Reseed');
+    assert.equal(s.items.find(t => t.hash === sourceHash).tags, 'keep, Brseed');
+    assert.deepEqual(records.map(row => row[0]).sort(), [feedHash, actualHash].sort());
+    assert.equal(journal.size, 0);
+    assert.equal(s.torrent.hash, feedHash, 'feed identity remains the history/recovery key');
+  });
+  for (const sameAsSource of [false, true]) {
+    await test('reseed skips an existing actual hash even when RSS hash differs: source=' + sameAsSource, async () => {
+      const s = setup({ reseed: true, category: 'OTHER', existing: !sameAsSource });
+      rssApi.getTorrentNameByBencode = async () => ({ name: 'resource', hash: (sameAsSource ? sourceHash : actualHash).toUpperCase() });
+      await s.task._pushTorrent(s.torrent, s.client);
+      assert.equal(s.sends.length, 0);
+      assert.deepEqual(s.writes, []);
+      assert.equal(journal.size, 0);
+    });
+  }
+  await test('a qB torrent sharing only the RSS identifier does not hide a different actual infohash', async () => {
+    const s = setup({ reseed: true, category: 'OTHER', actualCategory: 'OTHER' });
+    s.items.push({ hash: feedHash, tags: 'keep' });
+    await s.task._pushTorrent(s.torrent, s.client);
+    assert.equal(s.sends.length, 1);
+    assert.equal(s.sends[0][1], actualHash);
+    assert.ok(s.writes.some(([hash, tag]) => hash === actualHash && tag === 'Reseed'));
+    assert.ok(!s.writes.some(([hash]) => hash === feedHash));
+  });
+  for (const failure of ['uncertain add', 'tag write']) {
+    await test('non-SKY reseed recovery uses the actual hash after ' + failure + ' without re-adding', async () => {
+      const s = setup({ reseed: true, category: 'OTHER', actualCategory: 'OTHER' });
+      const send = s.client.addTorrent;
+      const write = s.client.addTorrentTag;
+      s.task.ntf.addTorrentError = async () => {};
+      s.client.addTorrent = async (...args) => {
+        const result = await send(...args);
+        if (failure === 'uncertain add') throw Object.assign(new Error('connection reset'), { addUncertain: true });
+        return result;
+      };
+      if (failure === 'tag write') s.client.addTorrentTag = async () => { throw new Error('tag temporarily unavailable'); };
+      await s.task._pushTorrent(s.torrent, s.client);
+      assert.equal(journal.get(feedHash).hash, actualHash);
+      assert.equal(journal.get(feedHash).phase, failure === 'uncertain add' ? 'adding' : 'accepted');
+
+      s.client.addTorrentTag = write;
+      s.recover();
+      const restarted = Object.assign(Object.create(Rss.prototype), s.task);
+      await restarted._recoverActions();
+      assert.equal(s.sends.length, 1);
+      assert.deepEqual(s.writes, [[actualHash, 'Reseed'], [sourceHash, 'Brseed']]);
+      assert.equal(journal.size, 0);
+    });
+  }
   for (const [name, options] of [['URL', {}], ['file', { file: true }], ['reseed', { reseed: true }]]) {
     await test('SKY publication tag: ' + name + ' uses actual hash and preserves all existing tags', async () => {
       const s = setup(options);

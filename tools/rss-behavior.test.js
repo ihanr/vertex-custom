@@ -120,6 +120,7 @@ const reset = () => {
   calls.length = 0;
   global.runningClient = {};
   rssApi.getTorrentNameByBencode = async () => ({ name: 'matched data', hash: 'new-hash' });
+  util.getRecord = async () => undefined;
   util.runRecord = async () => {};
   util.sleep = async () => {};
 };
@@ -136,6 +137,39 @@ const test = async (name, fn) => {
 };
 
 (async () => {
+  await test('the first RSS poll processes fresh torrents instead of recording a sleep rejection', async () => {
+    const history = [];
+    const rejected = [];
+    util.getRecord = async (_sql, [hash]) => history.find(row => row[0] === hash) ? { id: 1 } : undefined;
+    util.runRecord = async (_sql, values) => history.push(values);
+    global.runningClient['task-client'] = makeClient('task-client');
+    const rss = new Rss({ id: 'rss-id', alias: 'first-poll', rssUrls: [], clientArr: ['task-client'],
+      maxSleepTime: 60, dryrun: true });
+    rss.ntf = { addTorrent: async () => {}, addTorrentError: async () => {},
+      rejectTorrent: async (...args) => rejected.push(args) };
+
+    await rss.rss([{ ...torrent, pubTime: 99 }]);
+    await rss.rss([{ ...torrent, pubTime: 99 }]);
+
+    assert.equal(calls.length, 1, 'the fresh item is added once and then deduplicated by history');
+    assert.deepEqual(rejected, []);
+    assert.ok(history.every(row => row[8] === 1));
+  });
+
+  await test('a genuine gap after a completed RSS poll still enforces maxSleepTime', async () => {
+    const history = [];
+    util.runRecord = async (_sql, values) => history.push(values);
+    global.runningClient['task-client'] = makeClient('task-client');
+    const rss = makeRss({ lastRssTime: 1, maxSleepTime: 60 });
+
+    await rss.rss([torrent]);
+
+    assert.deepEqual(calls, []);
+    assert.equal(history.length, 1);
+    assert.equal(history[0][7], '拒绝原因: 最长休眠时间');
+    assert.equal(rss.lastRssTime, 100);
+  });
+
   await test('RSS task strips reserved reseed tags from its user tag list', async () => {
     const rss = new Rss({
       id: 'tag-test',

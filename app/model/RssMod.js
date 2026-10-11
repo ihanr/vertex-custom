@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const cron = require('node-cron');
 const Rss = require('../common/Rss');
 const rssTag = require('../libs/rss-tag');
 
@@ -8,6 +9,7 @@ class RssMod {
   add (options) {
     const id = util.uuid.v4().split('-')[0];
     const rssSet = { ...options };
+    if ((rssSet.enable || rssSet.cron !== undefined) && !cron.validate(rssSet.cron)) throw new Error('RSS Cron 表达式无效');
     rssSet.tag = rssTag.normalize(rssSet.tag);
     rssSet.id = id;
     fs.writeFileSync(path.join(__dirname, '../data/rss/', id + '.json'), JSON.stringify(rssSet, null, 2));
@@ -29,6 +31,7 @@ class RssMod {
 
   modify (options) {
     const rssSet = { ...options };
+    if ((rssSet.enable || rssSet.cron !== undefined) && !cron.validate(rssSet.cron)) throw new Error('RSS Cron 表达式无效');
     rssSet.tag = rssTag.normalize(rssSet.tag);
     rssSet.sameServerClients = rssSet.sameServerClients || [];
     rssSet.reseedClients = rssSet.reseedClients || [];

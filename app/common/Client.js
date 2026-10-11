@@ -607,16 +607,17 @@ class Client {
     const torrents = [...this.maindata.torrents];
     const syncTorrent = async (torrent) => {
       try {
-        const statusCacheKey = `vertex:torrent_tracker_status:${torrent.hash}`;
+        const statusCacheKey = `vertex:torrent_tracker_status:${this.id}:${torrent.hash}`;
         const cachedStatus = await redis.get(statusCacheKey);
         if (cachedStatus) {
           this.trackerStatus[torrent.hash] = JSON.parse(cachedStatus);
           return;
         }
-        if (await redis.get(`vertex:torrent_tracker:${torrent.hash}`)) return;
+        const skipCacheKey = `vertex:torrent_tracker:${this.id}:${torrent.hash}`;
+        if (await redis.get(skipCacheKey)) return;
         const sqlRes = await util.getRecord('SELECT * FROM torrents WHERE hash = ?', [torrent.hash]);
         if (!sqlRes || !!sqlRes.delete_time) {
-          await redis.set(`vertex:torrent_tracker:${torrent.hash}`, 1);
+          await redis.set(skipCacheKey, 1);
           return;
         };
         const { statusCode, body } = await this.client.getTrackerList(this.clientUrl, this.cookie, torrent.hash);

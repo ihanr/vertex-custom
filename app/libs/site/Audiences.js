@@ -1,5 +1,24 @@
 const util = require('../util');
 const moment = require('moment');
+const { JSDOM } = require('jsdom');
+
+function parseSize (text, field) {
+  const match = text.trim().replace(/,/g, '').match(/^(\d+(?:\.\d+)?)\s*(B|[KMGTP]i?B)$/i);
+  if (!match) throw new Error(`Audiences 无法解析${field}，请检查站点页面结构`);
+  const unit = match[2].toUpperCase().replace(/^([KMGTP])I?B$/, '$1iB');
+  const size = util.calSize(match[1], unit);
+  if (!Number.isFinite(size)) throw new Error(`Audiences ${field}数值无效`);
+  return size;
+}
+
+function parseCount (text, field) {
+  const value = text.trim().replace(/^[↑↓]\s*/, '').replace(/,/g, '');
+  const count = Number(value);
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(count)) {
+    throw new Error(`Audiences 无法解析${field}，请检查站点页面结构`);
+  }
+  return count;
+}
 
 class Site {
   constructor () {
@@ -12,24 +31,36 @@ class Site {
   async getInfo () {
     const info = {};
     const document = await this._getDocument(this.index, false, 10);
+    const readMetric = (selector, legacySelector, field) => {
+      const modern = document.querySelector(selector);
+      const legacy = document.querySelector(legacySelector);
+      const text = modern ? modern.textContent : legacy?.nextSibling?.textContent;
+      if (!text || !text.trim()) throw new Error(`Audiences 缺少${field}元素，请检查站点页面结构`);
+      return text;
+    };
     // 用户名
-    info.username = document.querySelector('a[href*=userdetails] b').innerHTML;
+    const user = document.querySelector('a[href*="userdetails"] b');
+    const uid = document.querySelector('a[href*="userdetails"]')?.getAttribute('href')?.match(/[?&]id=(\d+)/);
+    if (!user || !user.textContent.trim() || !uid || +uid[1] <= 0) {
+      throw new Error('Audiences 缺少用户信息，请检查登录状态或站点页面结构');
+    }
+    info.username = user.textContent.trim();
     // uid
-    info.uid = +document.querySelector('a[href*=userdetails]').href.match(/id=(\d+)/)[1];
+    info.uid = +uid[1];
     // 上传
-    info.upload = document.querySelector('[class=color_uploaded]').nextSibling.nodeValue.trim().replace(/(\w)B/, '$1iB');
-    info.upload = util.calSize(...info.upload.split(' '));
+    info.upload = parseSize(readMetric('.site-userbar__compact-metric--uploaded', '.color_uploaded', '上传量'), '上传量');
     // 下载
-    info.download = document.querySelector('[class=color_downloaded]').nextSibling.nodeValue.trim().replace(/(\w)B/, '$1iB');
-    info.download = util.calSize(...info.download.split(' '));
+    info.download = parseSize(readMetric('.site-userbar__compact-metric--downloaded', '.color_downloaded', '下载量'), '下载量');
     // 做种
-    info.seeding = +document.querySelector('img[class=arrowup]').nextSibling.nodeValue.trim();
+    info.seeding = parseCount(readMetric('.site-userbar__compact-metric-inline-link--seeding', 'img.arrowup', '做种数量'), '做种数量');
     // 下载
-    info.leeching = +document.querySelector('img[class=arrowdown]').nextSibling.nodeValue.trim();
+    info.leeching = parseCount(readMetric('.site-userbar__compact-metric-inline-link--leeching', 'img.arrowdown', '下载数量'), '下载数量');
     // 做种体积
     const seedingDocument = await this._getDocument(`${this.index}getusertorrentlistajax.php?userid=${info.uid}&type=seeding`, true, 300, false, { referer: `https://audiences.me/userdetails.php?id=${info.uid}` });
-    const seedingSize = (seedingDocument.match(/Total: (\d+\.\d+ [KMGTP]B)/) || [0, '0 B'])[1].replace(/([KMGTP])B/, '$1iB');
-    info.seedingSize = util.calSize(...seedingSize.split(' '));
+    const seedingText = new JSDOM(seedingDocument).window.document.body.textContent;
+    const seedingSize = seedingText.match(/\bTotal\s*:\s*([\d,.]+\s*(?:[KMGTP]i?B|B))\b/i);
+    if (!seedingSize) throw new Error('Audiences 无法解析做种体积，请检查做种列表接口响应');
+    info.seedingSize = parseSize(seedingSize[1], '做种体积');
     return info;
   };
 

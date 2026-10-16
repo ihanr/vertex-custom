@@ -87,7 +87,7 @@
       :loading="loading"
       :data-source="sites"
       :pagination="false"
-      :scroll="{ x: 1440, y: scrollHeight }"
+      :scroll="{ x: 1440 }"
     >
       <template #title>
         <span style="font-size: 16px; font-weight: bold;">站点数据</span>
@@ -221,7 +221,6 @@ export default {
       loading: true,
       columns,
       overviewSrc: '/api/site/overview',
-      scrollHeight: 640,
       sites: [],
       siteIncrease: {},
       setting: {
@@ -312,10 +311,6 @@ export default {
     this.siteSetting.theme = this.isMobile() ? 'card' : 'list';
     this.listSite();
     this.get();
-    this.scrollHeight = window.innerHeight - 32 - 38 - 49 - 41 - 60 - (this.isMobile() ? 60 : 0);
-    window.onresize = () => {
-      this.scrollHeight = window.innerHeight - 32 - 38 - 49 - 41 - 60 - (this.isMobile() ? 60 : 0);
-    };
   }
 };
 </script>

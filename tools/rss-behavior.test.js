@@ -755,6 +755,132 @@ const test = async (name, fn) => {
     assert.equal(calls[0][0], 'inside');
     assert.equal(calls[0][3], false);
   });
+
+  // These exercise the real RSS pipeline; only qB/network/database boundaries are doubled.
+  let allocationFailures = 0;
+  const allocationTest = async (name, fn) => {
+    try { await test(name, fn); } catch (error) {
+      allocationFailures++;
+      console.error(error.message);
+    }
+  };
+  const allocationTask = (extra = {}) => makeRss({
+    allocationMode: 'roundRobin', clientArr: ['a', 'b', 'c'], ...extra
+  });
+  const setupAllocationClients = () => {
+    for (const id of ['a', 'b', 'c']) global.runningClient[id] = makeClient(id);
+  };
+  const item = hash => ({ ...torrent, hash });
+  const addTargets = () => calls.filter(call => call[1] === torrent.url).map(call => call[0]);
+
+  await allocationTest('shared rotation spans RSS tasks, scans and task recreation', async () => {
+    setupAllocationClients();
+    await allocationTask({ id: 'one' }).rss([item('one')]);
+    await allocationTask({ id: 'two' }).rss([item('two')]);
+    await allocationTask({ id: 'one' }).rss([item('three'), item('four')]);
+    assert.deepEqual(addTargets(), ['a', 'b', 'c', 'a']);
+  });
+
+  await allocationTest('concurrent RSS requests rotate before the first qB response', async () => {
+    setupAllocationClients();
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    for (const client of Object.values(global.runningClient)) {
+      client.addTorrent = async (...args) => { calls.push([client.id, ...args]); await gate; };
+    }
+    const runs = ['one', 'two', 'three'].map(id => allocationTask({ id }).rss([item(id)]));
+    try {
+      await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(addTargets(), ['a', 'b', 'c']);
+    } finally { release(); await Promise.all(runs); }
+  });
+
+  await allocationTest('overlapping rule groups rotate without selecting outside their own group', async () => {
+    setupAllocationClients();
+    for (const [hash, group] of [['one', ['a', 'b']], ['two', ['b', 'c']], ['three', ['a', 'c']]]) {
+      await allocationTask({ acceptRules: [{ type: 'javascript', code: '() => true', clientArr: group }] }).rss([item(hash)]);
+    }
+    assert.deepEqual(addTargets(), ['a', 'b', 'c']);
+  });
+
+  await allocationTest('rotation ignores ranking but retains all candidate limits', async () => {
+    setupAllocationClients();
+    global.runningClient.a.maindata.uploadSpeed = 500;
+    await allocationTask({ clientSortBy: 'uploadSpeed' }).rss([item('one'), item('two')]);
+    assert.deepEqual(addTargets(), ['a', 'b']);
+    for (const [property, value] of [['status', false], ['maxUploadSpeed', 1], ['maxDownloadSpeed', 1], ['maxLeechNum', 1], ['minFreeSpace', 100]]) {
+      const a = global.runningClient.a;
+      a.status = true; a.maxUploadSpeed = 0; a.maxDownloadSpeed = 0; a.maxLeechNum = 0; a.minFreeSpace = 0;
+      a.avgUploadSpeed = 2; a.avgDownloadSpeed = 2; a.maindata.leechingCount = 1;
+      a[property] = value;
+      const task = allocationTask({ clientArr: ['a'] });
+      const before = calls.length;
+      await task.rss([item(property)]);
+      assert.equal(calls.length, before, property + ' must exclude the only candidate');
+    }
+  });
+
+  await allocationTest('legacy and unknown modes retain their original upload sorting', async () => {
+    setupAllocationClients();
+    global.runningClient.a.maindata.uploadSpeed = 500;
+    for (const allocationMode of [undefined, 'original', 'unknown']) {
+      const task = allocationTask({ allocationMode, clientSortBy: 'uploadSpeed' });
+      await task.rss([item(String(allocationMode) + '-one'), item(String(allocationMode) + '-two')]);
+    }
+    assert.deepEqual(addTargets(), ['b', 'b', 'b', 'b', 'b', 'b']);
+  });
+
+  await allocationTest('a single eligible downloader may repeat but an unavailable group never expands', async () => {
+    setupAllocationClients();
+    await allocationTask({ clientArr: ['b'] }).rss([item('one'), item('two')]);
+    global.runningClient.b.status = false;
+    await allocationTask({ clientArr: ['b'] }).rss([item('three')]);
+    assert.deepEqual(addTargets(), ['b', 'b']);
+  });
+
+  for (const unavailableNormal of [false, true]) {
+    await allocationTest('reseed success consumes no normal rotation slot; normal unavailable=' + unavailableNormal, async () => {
+      setupAllocationClients();
+      global.runningClient.reseed = makeClient('reseed', {
+        maindata: { torrents: [{ size: 100, completed: 100, name: 'matched data', hash: 'old', savePath: '/existing' }] }
+      });
+      await allocationTask({ autoReseed: true, reseedClients: ['reseed'],
+        clientArr: unavailableNormal ? ['missing'] : ['a', 'b', 'c'] }).rss([torrent]);
+      await allocationTask().rss([item('normal')]);
+      assert.deepEqual(addTargets(), ['reseed', 'a']);
+      const reseed = calls.find(call => call[0] === 'reseed' && call[1] === torrent.url);
+      assert.equal(reseed[3], true);
+      assert.equal(reseed[6], '/existing');
+      assert.ok(calls.some(call => call[0] === 'reseed' && call[2] === 'new-hash' && call[3] === 'Reseed'));
+      assert.ok(calls.some(call => call[0] === 'reseed' && call[2] === 'old' && call[3] === 'Brseed'));
+    });
+  }
+
+  await allocationTest('only-reseed without data never consumes a normal rotation slot', async () => {
+    setupAllocationClients();
+    await allocationTask({ autoReseed: true, onlyReseed: true, reseedClients: [] }).rss([item('no-data')]);
+    await allocationTask().rss([item('one'), item('two')]);
+    assert.deepEqual(addTargets(), ['a', 'b']);
+  });
+
+  await allocationTest('reseed fallback rotates only inside the matched normal rule group', async () => {
+    setupAllocationClients();
+    await allocationTask({ autoReseed: true, reseedClients: [],
+      acceptRules: [{ type: 'javascript', code: '() => true', clientArr: ['b', 'c'] }] }).rss([item('one'), item('two')]);
+    assert.deepEqual(addTargets(), ['b', 'c']);
+  });
+
+  await allocationTest('definite preparation failure releases the reserved normal slot', async () => {
+    setupAllocationClients();
+    global.runningClient.a.maxLeechNum = 1;
+    const task = allocationTask({ pushTorrentFile: true, clientArr: ['a'] });
+    task._downloadTorrent = async () => { throw new Error('metadata unavailable'); };
+    await task.rss([item('failed-file')]);
+    await allocationTask({ clientArr: ['a'] }).rss([item('after-failure')]);
+    assert.deepEqual(addTargets(), ['a']);
+  });
+
+  if (allocationFailures) throw new Error(allocationFailures + ' shared allocation cases failed');
 })().catch(error => {
   console.error(error);
   process.exitCode = 1;

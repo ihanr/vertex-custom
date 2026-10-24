@@ -12,6 +12,10 @@ const Push = require('./Push');
 const actions = require('../libs/rss-actions');
 const rssTag = require('../libs/rss-tag');
 
+// Process-local normal-download state; reseeding never reads or advances it.
+const normalAllocations = new WeakMap();
+let allocationSequence = 0;
+
 class Rss {
   constructor (rss) {
     this._rss = rss;
@@ -22,6 +26,7 @@ class Rss {
     this.urls = rss.rssUrls;
     this.clientArr = rss.clientArr || [rss.client];
     this.clientSortBy = rss.clientSortBy;
+    this.allocationMode = rss.allocationMode === 'roundRobin' ? 'roundRobin' : 'original';
     this.autoReseed = rss.autoReseed;
     this.onlyReseed = !!rss.autoReseed && !!rss.onlyReseed;
     this.reseedClients = rss.reseedClients;
@@ -203,6 +208,7 @@ class Rss {
 
   destroy () {
     this.destroyed = true;
+    for (const release of this.allocationReleases || []) release();
     if (this.recoveryJob) this.recoveryJob.stop();
     logger.info('销毁 Rss 实例:', this.alias);
     this.rssJob.stop();
@@ -247,21 +253,54 @@ class Rss {
   }
 
   _selectClient (clientIds) {
+    const rotating = this.allocationMode === 'roundRobin';
     const availableClients = clientIds
       .map(item => global.runningClient[item])
       .filter(item => {
+        const leechingCount = () => (item.getLeechingCount ? item.getLeechingCount() : item.maindata.leechingCount) +
+          (rotating ? normalAllocations.get(item)?.preparing.size || 0 : 0);
         return !!item && !!item.status && !!item.maindata &&
           (!this.maxClientUploadSpeed || this.maxClientUploadSpeed > item.avgUploadSpeed) &&
           (!this.maxClientDownloadSpeed || this.maxClientDownloadSpeed > item.avgDownloadSpeed) &&
-          (!this.maxClientDownloadCount || this.maxClientDownloadCount > (item.getLeechingCount ? item.getLeechingCount() : item.maindata.leechingCount)) &&
+          (!this.maxClientDownloadCount || this.maxClientDownloadCount > leechingCount()) &&
           (!item.maxDownloadSpeed || item.maxDownloadSpeed > item.avgDownloadSpeed) &&
           (!item.maxUploadSpeed || item.maxUploadSpeed > item.avgUploadSpeed) &&
-          (!item.maxLeechNum || item.maxLeechNum > (item.getLeechingCount ? item.getLeechingCount() : item.maindata.leechingCount)) &&
-          (!item.minFreeSpace || item.minFreeSpace < item.maindata.freeSpaceOnDisk);
+          (!item.maxLeechNum || item.maxLeechNum > leechingCount()) &&
+          (!item.minFreeSpace || item.minFreeSpace < item.maindata.freeSpaceOnDisk) &&
+          (!rotating || !item.sameServerClients ||
+            ((!item.maxUploadSpeed || this._sum(item.sameServerClients.map(id => global.runningClient[id]?.maindata?.uploadSpeed || 0)) <= item.maxUploadSpeed) &&
+             (!item.maxDownloadSpeed || this._sum(item.sameServerClients.map(id => global.runningClient[id]?.maindata?.downloadSpeed || 0)) <= item.maxDownloadSpeed)));
       });
+    if (rotating) {
+      return availableClients.sort((a, b) =>
+        (normalAllocations.get(a)?.last || 0) - (normalAllocations.get(b)?.last || 0))[0];
+    }
     return availableClients.sort((a, b) => (this.clientSortBy === 'freeSpaceOnDisk' ? -1 : 1) *
       (a.maindata[this.clientSortBy] - b.maindata[this.clientSortBy])
     )[0];
+  }
+
+  _reserveNormalClient (fitRule, retryClient) {
+    const clientIds = this._getClientIds(fitRule);
+    const client = this._selectClient(retryClient ? clientIds.filter(id => id === retryClient.id) : clientIds);
+    if (!client) return {};
+    let state = normalAllocations.get(client);
+    if (!state) {
+      state = { last: 0, preparing: new Set() };
+      normalAllocations.set(client, state);
+    }
+    // No await between selection, advancing the shared order and reserving a slot.
+    if (!retryClient) state.last = ++allocationSequence;
+    const token = {};
+    state.preparing.add(token);
+    if (!this.allocationReleases) this.allocationReleases = new Set();
+    const release = () => {
+      state.preparing.delete(token);
+      this.allocationReleases.delete(release);
+    };
+    this.allocationReleases.add(release);
+    logger.info(this.alias, retryClient ? '普通下载重试预占原下载器:' : '普通下载共享轮询选择下载器:', client.alias);
+    return { client, release };
   }
 
   async _addReseedTag (client, hash, tag = 'Reseed') {
@@ -549,7 +588,21 @@ class Rss {
         }
       }
     }
-    if (retryAction?.kind === 'reseed') return;
+    if (this.destroyed || retryAction?.kind === 'reseed') return;
+    if (this.allocationMode === 'roundRobin' && !(this.onlyReseed && this.autoReseed)) {
+      const reservation = this._reserveNormalClient(fitRule, retryAction ? _client : undefined);
+      // A retry stays on its original qB; keep its journal untouched while that slot is busy.
+      if (retryAction && !reservation.client) return;
+      try {
+        return await this._pushNormalTorrent(torrent, reservation.client, fitRule, reservation.release);
+      } finally {
+        if (reservation.release) reservation.release();
+      }
+    }
+    return this._pushNormalTorrent(torrent, _client, fitRule);
+  }
+
+  async _pushNormalTorrent (torrent, _client, fitRule, releaseAllocation) {
     if (!this.onlyReseed || !this.autoReseed) {
       if (!_client) {
         await util.runRecord('INSERT INTO torrents (hash, name, size, rss_id, link, record_time, record_type, record_note) values (?, ?, ?, ?, ?, ?, ?, ?)',
@@ -679,6 +732,8 @@ class Rss {
             await actions.save(this.id, torrent.hash, pending);
             await this._prepareSkyPubTime(torrent, pending, client, hash);
             if (this.destroyed) throw new Error('RSS 已停用');
+            // Client synchronously takes its existing in-flight slot before its first await.
+            if (releaseAllocation) releaseAllocation();
             if (this.tag) await client.addTorrentByTorrentFile(filepath, pending.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused, this.tag);
             else await client.addTorrentByTorrentFile(filepath, pending.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused);
           } else {
@@ -695,6 +750,7 @@ class Rss {
             }
             await this._prepareSkyPubTime({ ...torrent, url: torrentUrl }, pending, client);
             if (this.destroyed) throw new Error('RSS 已停用');
+            if (releaseAllocation) releaseAllocation();
             if (this.tag) await client.addTorrent(torrentUrl, pending.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused, this.tag);
             else await client.addTorrent(torrentUrl, pending.hash, false, this.uploadLimit, this.downloadLimit, savePath, category, this.autoTMM, this.paused);
           }

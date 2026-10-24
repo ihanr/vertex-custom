@@ -225,5 +225,155 @@ async function test(name, fn) {
       }
     });
   }
+  const rotating = extra => makeRss({ allocationMode: 'roundRobin', clientArr: ['a', 'b'], ...extra });
+  const normalClient = (id, raw, extra = {}) => makeClient({
+    id, alias: id, maxLeechNum: 0,
+    maindata: { torrents: [], leechingCount: 0, freeSpaceOnDisk: 100 },
+    client: { addTorrent: raw, addTorrentByTorrentFile: raw }, ...extra
+  });
+  await test('rotation reserves a download slot while torrent-file metadata is still preparing', async () => {
+    let release; let started; let adds = 0;
+    const prepared = new Promise(resolve => { started = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const a = normalClient('a', async () => { adds++; return { statusCode: 200 }; }, { maxLeechNum: 1 });
+    global.runningClient = { a };
+    const task = rotating({ clientArr: ['a'], pushTorrentFile: true });
+    task._downloadTorrent = async () => { started(); await gate; return { filepath: '/test.torrent', hash: torrent.hash }; };
+    const first = task.rss([torrent]);
+    await prepared;
+    try {
+      await rotating({ id: 'second', clientArr: ['a'] }).rss([{ ...torrent, hash: 'c'.repeat(40) }]);
+      assert.equal(adds, 0, 'the second task must not send into a preparing slot');
+    } finally { release(); await first; }
+    assert.equal(adds, 1, 'the owner must not block itself when handing its slot to Client');
+  });
+  await test('preparation handoff does not count an in-flight add twice', async () => {
+    let release; let started; let adds = 0;
+    const sent = new Promise(resolve => { started = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const a = normalClient('a', async () => { adds++; started(); await gate; return { statusCode: 200 }; });
+    global.runningClient = { a };
+    const first = rotating({ clientArr: ['a'], maxClientDownloadCount: 2 }).rss([torrent]);
+    await sent;
+    const second = rotating({ id: 'second', clientArr: ['a'], maxClientDownloadCount: 2 })
+      .rss([{ ...torrent, hash: 'c'.repeat(40) }]);
+    try {
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(adds, 2);
+      assert.equal(a.getLeechingCount(), 2);
+    } finally { release(); await Promise.all([first, second]); }
+  });
+  await test('stopping a preparing RSS releases its slot without sending the cancelled torrent', async () => {
+    let release; let started; let adds = 0;
+    const prepared = new Promise(resolve => { started = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const a = normalClient('a', async () => { adds++; return { statusCode: 200 }; }, { maxLeechNum: 1 });
+    global.runningClient = { a };
+    const task = rotating({ clientArr: ['a'], pushTorrentFile: true, rssJob: { stop() {} }, clearCount: { stop() {} } });
+    global.runningRss = { rss: task };
+    task._downloadTorrent = async () => { started(); await gate; return { filepath: '/test.torrent', hash: torrent.hash }; };
+    const first = task.rss([torrent]);
+    await prepared;
+    try {
+      task.destroy();
+      await rotating({ id: 'second', clientArr: ['a'] }).rss([{ ...torrent, hash: 'c'.repeat(40) }]);
+      assert.equal(adds, 1, 'the cancelled preparation must release its slot immediately');
+    } finally { release(); await first; }
+    assert.equal(adds, 1);
+  });
+  await test('rotation reconciles an uncertain add on the original qB without resending or rotating recovery', async () => {
+    const added = [];
+    const accepted = [];
+    const a = normalClient('a', async () => { added.push('a'); accepted.push(torrent); throw new Error('reset after accept'); },
+      { findTorrent: async hash => accepted.find(item => item.hash === hash) });
+    const b = normalClient('b', async () => { added.push('b'); return { statusCode: 200 }; });
+    global.runningClient = { a, b };
+    const task = rotating();
+    await task.rss([torrent]);
+    assert.equal((await actionStore.get('rss', torrent.hash)).clientId, 'a');
+    await rotating({ id: 'second' }).rss([{ ...torrent, hash: 'c'.repeat(40) }]);
+    const stored = await actionStore.get('rss', torrent.hash);
+    stored.nextTry = 0;
+    await actionStore.save('rss', torrent.hash, stored);
+    await task._recoverActions();
+    assert.deepEqual(added, ['a', 'b']);
+    assert.equal(await actionStore.get('rss', torrent.hash), undefined);
+  });
+  await test('normal retry waits on the original downloader when another task holds its preparation slot', async () => {
+    let release; let started;
+    const added = [];
+    const prepared = new Promise(resolve => { started = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const a = normalClient('a', async () => { added.push('a'); return { statusCode: 200 }; }, { findTorrent: async () => undefined });
+    const b = normalClient('b', async () => { added.push('b'); return { statusCode: 200 }; });
+    global.runningClient = { a, b };
+    const fresh = rotating({ id: 'fresh', clientArr: ['a'], maxClientDownloadCount: 1, pushTorrentFile: true });
+    fresh._downloadTorrent = async () => { started(); await gate; return { filepath: '/fresh.torrent', hash: torrent.hash }; };
+    const running = fresh.rss([torrent]);
+    await prepared;
+    const retryItem = { ...torrent, hash: 'c'.repeat(40) };
+    await actionStore.save('retry', retryItem.hash, {
+      clientId: 'a', hash: retryItem.hash, kind: 'normal', phase: 'retry', attempts: 1, nextTry: 0
+    });
+    try {
+      await rotating({ id: 'retry', maxClientDownloadCount: 1 }).rss([retryItem]);
+      assert.deepEqual(added, [], 'a fixed-client retry must wait, not steal or switch the preparing slot');
+      assert.equal((await actionStore.get('retry', retryItem.hash)).attempts, 1);
+    } finally { release(); await running; }
+    assert.deepEqual(added, ['a']);
+  });
+  await test('normal retry owns a preparation slot but does not advance the rotation order', async () => {
+    let release; let started;
+    const added = [];
+    const prepared = new Promise(resolve => { started = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const a = normalClient('a', async () => { added.push('a'); return { statusCode: 200 }; });
+    const b = normalClient('b', async () => { added.push('b'); return { statusCode: 200 }; }, { findTorrent: async () => undefined });
+    global.runningClient = { a, b };
+    await actionStore.save('retry', torrent.hash, {
+      clientId: 'b', hash: torrent.hash, kind: 'normal', phase: 'retry', attempts: 1, nextTry: 0
+    });
+    const task = rotating({ id: 'retry', maxClientDownloadCount: 1, pushTorrentFile: true });
+    task._downloadTorrent = async () => { started(); await gate; return { filepath: '/retry.torrent', hash: torrent.hash }; };
+    const running = task.rss([torrent]);
+    await prepared;
+    try {
+      await rotating({ id: 'fresh', clientArr: ['b'], maxClientDownloadCount: 1 }).rss([{ ...torrent, hash: 'c'.repeat(40) }]);
+      assert.deepEqual(added, []);
+    } finally { release(); await running; }
+    await rotating({ id: 'next', clientArr: ['b', 'a'] }).rss([{ ...torrent, hash: 'd'.repeat(40) }]);
+    assert.deepEqual(added, ['b', 'b'], 'retry must not make b newer in rotation history');
+  });
+  await test('a stopped RSS cannot reserve after its asynchronous reseed metadata request fails', async () => {
+    let failMetadata; let started; let releaseFree; let adds = 0;
+    const previousLookup = rssApi.getTorrentNameByBencode;
+    const previousScrape = util.scrapeFree;
+    const prepared = new Promise(resolve => { started = resolve; });
+    const metadata = new Promise((_resolve, reject) => { failMetadata = reject; });
+    const freeGate = new Promise(resolve => { releaseFree = resolve; });
+    rssApi.getTorrentNameByBencode = async () => { started(); return metadata; };
+    util.scrapeFree = async () => { await freeGate; return true; };
+    const source = { hash: 'b'.repeat(40), name: 'data', size: 100, completed: 100, savePath: '/existing' };
+    const a = normalClient('a', async () => { adds++; return { statusCode: 200 }; }, {
+      maxLeechNum: 1, maindata: { torrents: [source], leechingCount: 0, freeSpaceOnDisk: 100 }
+    });
+    global.runningClient = { a };
+    const stopped = rotating({ autoReseed: true, reseedClients: ['a'], clientArr: ['a'], scrapeFree: true,
+      rssJob: { stop() {} }, clearCount: { stop() {} } });
+    global.runningRss = { rss: stopped };
+    const running = stopped.rss([torrent]);
+    await prepared;
+    try {
+      stopped.destroy();
+      failMetadata(new Error('lookup failed after stopping'));
+      await new Promise(resolve => setImmediate(resolve));
+      await rotating({ id: 'active', clientArr: ['a'] }).rss([{ ...torrent, hash: 'c'.repeat(40) }]);
+      assert.equal(adds, 1, 'a stopped task must not block a live task with a new preparation reservation');
+    } finally {
+      releaseFree(); await running;
+      rssApi.getTorrentNameByBencode = previousLookup;
+      util.scrapeFree = previousScrape;
+    }
+  });
   process.exitCode = failed ? 1 : 0;
 })();

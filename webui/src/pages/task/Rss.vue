@@ -81,10 +81,19 @@
           </a-checkbox-group>
         </a-form-item>
         <a-form-item
+          label="分配方式"
+          name="allocationMode"
+          extra="共享轮询只分配普通下载；多个 RSS 共用分配顺序，不改变辅种匹配。">
+          <a-select size="small" v-model:value="rss.allocationMode">
+            <a-select-option value="original">原排序</a-select-option>
+            <a-select-option value="roundRobin">共享轮询</a-select-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item
           label="排序规则"
           name="clientSortBy"
-          :rules="[{ required: true, message: '${label}不可为空! ' }]">
-          <a-select size="small" v-model:value="rss.clientSortBy">
+          :rules="rss.allocationMode === 'roundRobin' ? [] : [{ required: true, message: '${label}不可为空! ' }]">
+          <a-select size="small" v-model:value="rss.clientSortBy" :disabled="rss.allocationMode === 'roundRobin'">
             <a-select-option value="leechingCount">下载种子数量</a-select-option>
             <a-select-option value="uploadSpeed">当前上传速度</a-select-option>
             <a-select-option value="downloadSpeed">当前下载速度</a-select-option>
@@ -480,6 +489,7 @@ export default {
       rss: {},
       defaultRss: {
         clientArr: [],
+        allocationMode: 'original',
         enable: false,
         scrapeFree: false,
         scrapeHr: false,
@@ -572,10 +582,11 @@ export default {
       }
     },
     modifyClick (row) {
-      this.rss = { ...row };
+      this.rss = { ...row, allocationMode: row.allocationMode === 'roundRobin' ? 'roundRobin' : 'original' };
     },
     cloneClick (row) {
       this.rss = JSON.parse(JSON.stringify(row));
+      this.rss.allocationMode = this.rss.allocationMode === 'roundRobin' ? 'roundRobin' : 'original';
       this.rss.id = null;
       this.rss.alias = this.rss.alias + '-克隆';
     },

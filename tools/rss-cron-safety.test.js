@@ -124,6 +124,20 @@ try {
     assert.equal(JSON.parse(fs.readFileSync(addedFile)).cron, '15 0 0 1 1 *');
   });
 
+  for (const [configured, expected] of [[undefined, 'original'], ['unknown', 'original'], ['original', 'original'], ['roundRobin', 'roundRobin']]) {
+    test('RSS allocation mode survives add, edit and reload: ' + String(configured), () => {
+      rssMod.add({ ...valid, allocationMode: configured });
+      assert.equal(JSON.parse(fs.readFileSync(addedFile)).allocationMode, expected);
+      assert.equal(global.runningRss.new.allocationMode, expected);
+      rssMod.modify({ ...valid, allocationMode: configured });
+      assert.equal(JSON.parse(fs.readFileSync(existingFile)).allocationMode, expected);
+      assert.equal(global.runningRss.existing.allocationMode, expected);
+      const previousListRss = util.listRss;
+      util.listRss = () => [{ ...valid, allocationMode: configured }];
+      try { assert.equal(rssMod.list()[0].allocationMode, expected); } finally { util.listRss = previousListRss; }
+    });
+  }
+
   function start (options = {}) {
     let listening = false;
     let cookieCloudStarted = false;
